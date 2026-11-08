@@ -1,0 +1,13 @@
+# binaries & archives
+dev/tdl
+dev/tdl_MacOS_arm64.tar.gz
+*.tar.gz
+tgproxy/tgproxy
+tgproxy/tgproxy-linux
+.DS_Store
+
+# secrets / runtime data (NEVER commit)
+tgproxy/data/
+*.session
+config.json
+library.json

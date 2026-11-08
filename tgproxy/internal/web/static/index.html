@@ -1,0 +1,73 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>tgproxy 控制台</title>
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<header><h1>tgproxy <span class="sub">Telegram 媒体代理</span></h1></header>
+
+<main>
+  <section id="status-card" class="card">
+    <h2>状态</h2>
+    <div id="status">加载中…</div>
+  </section>
+
+  <section id="creds-card" class="card" hidden>
+    <h2>Telegram API 凭证</h2>
+    <p class="hint">在 <a href="https://my.telegram.org" target="_blank">my.telegram.org</a> → API development tools 获取。</p>
+    <form id="creds-form">
+      <label>App api_id
+        <input type="text" id="app-id" placeholder="例如 1234567">
+      </label>
+      <label>App api_hash
+        <input type="text" id="app-hash" placeholder="32 位十六进制">
+      </label>
+      <button type="submit">保存凭证</button>
+    </form>
+    <div id="creds-msg" class="msg"></div>
+  </section>
+
+  <section id="login-card" class="card" hidden>
+    <h2>Telegram 登录</h2>
+    <p class="hint">分步登录：先填手机号发送验证码，再填验证码点登录；如提示需要两步验证，填密码后再点登录。</p>
+    <form id="login-form">
+      <label>手机号（国际格式，如 +8613800138000）
+        <input type="text" id="phone" placeholder="+8613800138000">
+      </label>
+      <button type="button" id="send-code">1. 发送验证码</button>
+      <label>验证码
+        <input type="text" id="code" placeholder="Telegram 收到的验证码">
+      </label>
+      <label>两步验证密码（有 2FA 才填）
+        <input type="password" id="password" placeholder="2FA 密码（如需要）">
+      </label>
+      <button type="submit" id="do-login">2. 登录</button>
+    </form>
+    <div id="login-msg" class="msg"></div>
+  </section>
+
+  <section id="channels-card" class="card" hidden>
+    <h2>频道管理</h2>
+    <form id="add-form">
+      <input type="text" id="channel-ref" placeholder="@channelname 或 https://t.me/xxx 或数字ID">
+      <button type="submit">添加频道</button>
+    </form>
+    <table id="channel-table">
+      <thead><tr><th>标题</th><th>引用</th><th>ID</th><th></th></tr></thead>
+      <tbody id="channel-rows"><tr><td colspan="4">（无）</td></tr></tbody>
+    </table>
+    <div class="actions">
+      <button id="btn-scan">扫描全部频道</button>
+      <button id="btn-rebuild">重建媒体树</button>
+    </div>
+    <pre id="scan-log" hidden></pre>
+  </section>
+</main>
+
+<footer>tgproxy — strm 媒体树供 Jellyfin 使用 · 流地址 <code>http://&lt;host&gt;:8080/stream/&lt;channel&gt;_&lt;msg&gt;</code></footer>
+<script src="/static/app.js"></script>
+</body>
+</html>
