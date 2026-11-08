@@ -1,73 +1,196 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="zh-CN">
 <head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>tgproxy 控制台</title>
-<link rel="stylesheet" href="/static/style.css">
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light dark">
+  <title>tgproxy 控制台</title>
+  <link rel="icon" type="image/svg+xml" href="/static/favicon.svg">
+  <link rel="stylesheet" href="/static/style.css">
 </head>
 <body>
-<header><h1>tgproxy <span class="sub">Telegram 媒体代理</span></h1></header>
+  <div class="app-shell">
+    <header class="topbar">
+      <a class="brand" href="#main-content" aria-label="tgproxy 控制台首页">
+        <svg class="brand-mark" viewBox="0 0 28 28" aria-hidden="true">
+          <path d="M7 14h14M14 7v14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"></path>
+          <circle cx="7" cy="14" r="3.5" fill="currentColor"></circle>
+          <circle cx="21" cy="14" r="3.5" fill="currentColor"></circle>
+          <circle cx="14" cy="7" r="3.5" fill="currentColor"></circle>
+          <circle cx="14" cy="21" r="3.5" fill="currentColor"></circle>
+        </svg>
+        <span>tgproxy</span>
+      </a>
+      <div class="topbar-tools">
+        <span id="telegram-status" class="connection-state" data-state="loading" role="status">正在读取服务状态</span>
+        <button id="theme-toggle" class="icon-button" type="button" aria-label="切换为深色主题" title="切换为深色主题">
+          <svg class="theme-icon icon-sun" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="4"></circle><path d="M12 2v2m0 16v2M4.93 4.93l1.42 1.42m11.3 11.3 1.42 1.42M2 12h2m16 0h2M4.93 19.07l1.42-1.42m11.3-11.3 1.42-1.42"></path></svg>
+          <svg class="theme-icon icon-moon" viewBox="0 0 24 24" aria-hidden="true"><path d="M20.2 15.1A8.6 8.6 0 0 1 8.9 3.8 8.8 8.8 0 1 0 20.2 15.1Z"></path></svg>
+        </button>
+      </div>
+    </header>
 
-<main>
-  <section id="status-card" class="card">
-    <h2>状态</h2>
-    <div id="status">加载中…</div>
-  </section>
+    <main id="main-content" class="main-shell">
+      <section class="page-heading" aria-labelledby="page-title">
+        <div>
+          <h1 id="page-title">媒体同步</h1>
+          <p>管理 Telegram 频道，并检查 Jellyfin 媒体库更新。</p>
+        </div>
+        <div class="primary-actions">
+          <button id="btn-scan" class="button button-primary" type="button" disabled>
+            <svg class="button-icon" viewBox="0 0 20 20" aria-hidden="true"><path d="M7 3H4a1 1 0 0 0-1 1v3m10-4h3a1 1 0 0 1 1 1v3M7 17H4a1 1 0 0 1-1-1v-3m10 4h3a1 1 0 0 0 1-1v-3M6 10h8"></path></svg>
+            <span>扫描并更新</span>
+          </button>
+          <button id="btn-rebuild" class="button button-secondary" type="button" disabled>
+            <svg class="button-icon" viewBox="0 0 20 20" aria-hidden="true"><path d="M16.5 8A6.8 6.8 0 0 0 4.7 5.2L3 7m0 0V3.8M3 7h3.2M3.5 12a6.8 6.8 0 0 0 11.8 2.8L17 13m0 0v3.2m0-3.2h-3.2"></path></svg>
+            <span>重建媒体树</span>
+          </button>
+        </div>
+      </section>
 
-  <section id="creds-card" class="card" hidden>
-    <h2>Telegram API 凭证</h2>
-    <p class="hint">在 <a href="https://my.telegram.org" target="_blank">my.telegram.org</a> → API development tools 获取。</p>
-    <form id="creds-form">
-      <label>App api_id
-        <input type="text" id="app-id" placeholder="例如 1234567">
-      </label>
-      <label>App api_hash
-        <input type="text" id="app-hash" placeholder="32 位十六进制">
-      </label>
-      <button type="submit">保存凭证</button>
-    </form>
-    <div id="creds-msg" class="msg"></div>
-  </section>
+      <section class="sync-board" aria-labelledby="schedule-title">
+        <div class="section-heading">
+          <div>
+            <h2 id="schedule-title">频道节目表</h2>
+            <p id="scan-summary">等待读取频道状态</p>
+          </div>
+          <span id="sync-indicator" class="state-label" data-state="idle">等待扫描</span>
+        </div>
 
-  <section id="login-card" class="card" hidden>
-    <h2>Telegram 登录</h2>
-    <p class="hint">分步登录：先填手机号发送验证码，再填验证码点登录；如提示需要两步验证，填密码后再点登录。</p>
-    <form id="login-form">
-      <label>手机号（国际格式，如 +8613800138000）
-        <input type="text" id="phone" placeholder="+8613800138000">
-      </label>
-      <button type="button" id="send-code">1. 发送验证码</button>
-      <label>验证码
-        <input type="text" id="code" placeholder="Telegram 收到的验证码">
-      </label>
-      <label>两步验证密码（有 2FA 才填）
-        <input type="password" id="password" placeholder="2FA 密码（如需要）">
-      </label>
-      <button type="submit" id="do-login">2. 登录</button>
-    </form>
-    <div id="login-msg" class="msg"></div>
-  </section>
+        <ol class="workflow" aria-label="媒体同步阶段">
+          <li id="telegram-stage" class="workflow-stage" data-state="waiting">
+            <span class="stage-mark" aria-hidden="true"></span>
+            <div><strong>Telegram 扫描</strong><span id="telegram-stage-detail">等待开始</span></div>
+            <span id="telegram-stage-status" class="stage-status">待处理</span>
+          </li>
+          <li id="tree-stage" class="workflow-stage" data-state="waiting">
+            <span class="stage-mark" aria-hidden="true"></span>
+            <div><strong>媒体树</strong><span id="tree-stage-detail">等待生成入口</span></div>
+            <span id="tree-stage-status" class="stage-status">待处理</span>
+          </li>
+          <li id="jellyfin-stage" class="workflow-stage" data-state="waiting">
+            <span class="stage-mark" aria-hidden="true"></span>
+            <div><strong>Jellyfin</strong><span id="jellyfin-stage-detail">等待媒体树更新</span></div>
+            <span id="jellyfin-stage-status" class="stage-status">待处理</span>
+          </li>
+        </ol>
 
-  <section id="channels-card" class="card" hidden>
-    <h2>频道管理</h2>
-    <form id="add-form">
-      <input type="text" id="channel-ref" placeholder="@channelname 或 https://t.me/xxx 或数字ID">
-      <button type="submit">添加频道</button>
-    </form>
-    <table id="channel-table">
-      <thead><tr><th>标题</th><th>引用</th><th>ID</th><th></th></tr></thead>
-      <tbody id="channel-rows"><tr><td colspan="4">（无）</td></tr></tbody>
-    </table>
-    <div class="actions">
-      <button id="btn-scan">扫描全部频道</button>
-      <button id="btn-rebuild">重建媒体树</button>
-    </div>
-    <pre id="scan-log" hidden></pre>
-  </section>
-</main>
+        <div class="sync-workspace">
+          <div class="schedule-column">
+            <div class="scan-focus" aria-live="polite">
+              <div>
+                <span class="focus-label">当前频道</span>
+                <strong id="scan-focus-title">尚未开始扫描</strong>
+              </div>
+              <div class="focus-count">
+                <strong id="scan-focus-count">--</strong>
+                <span id="scan-focus-caption">发现视频</span>
+              </div>
+            </div>
+            <div class="progress-block">
+              <div class="progress-caption"><span id="progress-label">频道处理进度</span><span id="progress-count">0 / 0</span></div>
+              <div id="progress-segments" class="progress-segments" role="progressbar" aria-label="已处理频道数" aria-valuemin="0" aria-valuemax="0" aria-valuenow="0"></div>
+            </div>
+            <ol id="channel-schedule" class="channel-schedule" aria-label="频道扫描顺序"></ol>
+            <div id="schedule-empty" class="empty-state" hidden>
+              <strong>尚未添加频道</strong>
+              <span>添加频道后，它们会按扫描顺序显示在这里。</span>
+              <a href="#channel-ref">添加第一个频道</a>
+            </div>
+          </div>
 
-<footer>tgproxy — strm 媒体树供 Jellyfin 使用 · 流地址 <code>http://&lt;host&gt;:8080/stream/&lt;channel&gt;_&lt;msg&gt;</code></footer>
-<script src="/static/app.js"></script>
+          <aside class="jellyfin-panel" aria-labelledby="jellyfin-title">
+            <div class="jellyfin-panel-heading">
+              <h3 id="jellyfin-title">Jellyfin 更新</h3>
+              <span id="jellyfin-status" class="state-label" data-state="idle">等待更新</span>
+            </div>
+            <p id="jellyfin-message">媒体树生成后会提交刷新请求。</p>
+            <dl class="jellyfin-facts">
+              <div><dt>视频索引</dt><dd id="indexed-videos">--</dd></div>
+              <div><dt>媒体入口</dt><dd id="media-entries">--</dd></div>
+              <div><dt>最近请求</dt><dd id="jellyfin-updated">--</dd></div>
+            </dl>
+            <p class="jellyfin-note">请求成功只表示 Jellyfin 已收到刷新任务；资源入库进度请在 Jellyfin 中确认。</p>
+          </aside>
+        </div>
+      </section>
+
+      <div class="management-layout">
+        <section id="channels-card" class="channel-management" aria-labelledby="channels-title">
+          <div class="section-heading management-heading">
+            <div>
+              <h2 id="channels-title">频道管理</h2>
+              <p><span id="channel-count">0</span> 个频道</p>
+            </div>
+            <label class="search-field" for="channel-search">
+              <span>查找频道</span>
+              <input id="channel-search" type="search" placeholder="名称或频道引用">
+            </label>
+          </div>
+          <form id="add-form" class="add-channel-form">
+            <label class="visually-hidden" for="channel-ref">Telegram 频道</label>
+            <input id="channel-ref" type="text" autocomplete="off" placeholder="@频道名、t.me 链接或数字 ID" required>
+            <button class="button button-primary" type="submit" disabled>
+              <svg class="button-icon" viewBox="0 0 20 20" aria-hidden="true"><path d="M10 4v12M4 10h12"></path></svg>
+              <span>添加频道</span>
+            </button>
+          </form>
+          <p id="channel-message" class="form-message" role="status" hidden></p>
+          <div class="table-wrap">
+            <table id="channel-table">
+              <thead><tr><th scope="col">频道</th><th scope="col">引用</th><th scope="col">Telegram ID</th><th scope="col"><span class="visually-hidden">操作</span></th></tr></thead>
+              <tbody id="channel-rows"><tr><td class="table-empty" colspan="4">正在读取频道</td></tr></tbody>
+            </table>
+          </div>
+        </section>
+
+        <aside class="utility-column">
+          <section id="login-card" class="access-section" hidden aria-labelledby="login-title">
+            <h2 id="login-title">Telegram 登录</h2>
+            <p>使用 Telegram 账号授权频道读取。</p>
+            <form id="login-form">
+              <label for="phone">手机号</label>
+              <input type="tel" id="phone" autocomplete="tel" placeholder="+8613800138000">
+              <button id="send-code" class="button button-outline" type="button">发送验证码</button>
+              <label for="code">验证码</label>
+              <input type="text" id="code" inputmode="numeric" autocomplete="one-time-code" placeholder="Telegram 收到的验证码">
+              <div id="password-field" hidden>
+                <label for="password">两步验证密码</label>
+                <input type="password" id="password" autocomplete="current-password" placeholder="Telegram 两步验证密码">
+              </div>
+              <button type="submit" id="do-login" class="button button-primary">登录 Telegram</button>
+            </form>
+            <p id="login-msg" class="form-message" role="status" hidden></p>
+          </section>
+
+          <details id="credentials-card" class="access-section" hidden>
+            <summary>配置 Telegram API 凭证</summary>
+            <p>从 <a href="https://my.telegram.org" target="_blank" rel="noreferrer">my.telegram.org</a> 的 API development tools 获取。</p>
+            <form id="creds-form">
+              <label for="app-id">App api_id</label>
+              <input type="text" id="app-id" inputmode="numeric" autocomplete="off" placeholder="例如 1234567">
+              <label for="app-hash">App api_hash</label>
+              <input type="password" id="app-hash" autocomplete="new-password" placeholder="Telegram API hash">
+              <button class="button button-primary" type="submit">保存凭证</button>
+            </form>
+            <p id="creds-msg" class="form-message" role="status" hidden></p>
+          </details>
+
+          <details id="diagnostics" class="diagnostics" hidden>
+            <summary>扫描日志 <span id="log-count"></span></summary>
+            <pre id="scan-log" aria-live="polite"></pre>
+          </details>
+        </aside>
+      </div>
+
+      <p id="toast" class="toast" role="status" aria-live="polite" hidden></p>
+    </main>
+
+    <footer class="page-footer">
+      <span>tgproxy 为 Jellyfin 提供 Telegram 视频媒体入口。</span>
+      <code>流地址：/stream/&lt;频道ID&gt;_&lt;消息ID&gt;</code>
+    </footer>
+  </div>
+  <script src="/static/app.js"></script>
 </body>
 </html>

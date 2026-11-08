@@ -7,208 +7,127 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"unicode"
 )
 
-// Episode is an episode number extracted from a file name.
-type Episode struct {
-	Season  int
-	Episode int
+type Episode struct{ Season, Episode int }
+type episodePattern struct {
+	re              *regexp.Regexp
+	season, episode int
 }
 
-var seasonEpisodePatterns = []*regexp.Regexp{
-	// S01E02 / s01e02, S01E02E03 (take first)
-	regexp.MustCompile(`(?i)[\s._-]*S(\d{1,2})\s*E(\d{1,3})`),
-	// 1x02
-	regexp.MustCompile(`(?i)[\s._-]+(\d{1,2})x(\d{1,3})\b`),
-	// 第02集 / 第2集
-	regexp.MustCompile(`第\s*(\d{1,4})\s*[集话話回]`),
-	// EP02 / E02 / ep02 (standalone)
-	regexp.MustCompile(`(?i)[\s._-]+(?:EP?)(\d{1,4})\b`),
-	// 【01】 / 【第01集】
-	regexp.MustCompile(`【\s*第?\s*(\d{1,4})\s*[集话話]?\s*】`),
-	// (01) or [01] at word boundary
-	regexp.MustCompile(`[\(\[](\d{1,4})[\)\]]`),
-	// 01.mkv style: leading number in filename
-	regexp.MustCompile(`(?:^|[\s._-])(\d{2,4})(?:[\s._-]|$)`),
+var episodePatterns = []episodePattern{
+	{regexp.MustCompile(`(?i)S(\d{1,2})\s*E(\d{1,4})(?:E\d{1,4})?`), 1, 2},
+	{regexp.MustCompile(`(?i)(\d{1,2})x(\d{1,4})`), 1, 2},
+	{regexp.MustCompile(`第\s*(\d{1,4})\s*[集话話回]`), 0, 1},
+	{regexp.MustCompile(`(?i)(?:^|[\s._\-\[])EP?(\d{1,4})`), 0, 1},
+	{regexp.MustCompile(`[（(\[【]\s*第?\s*(\d{1,4})\s*[集话話]?\s*[）)\]】]`), 0, 1},
+	{regexp.MustCompile(`(\d{1,4})`), 0, 1},
 }
+var chineseSeason = regexp.MustCompile(`第\s*([0-9一二三四五六七八九十]+)\s*季`)
+var noiseTags = regexp.MustCompile(`(?i)(?:^|[\s._\-\[\]【】#])(?:1080p|720p|2160p|4k|2k|hdr|dv|x264|x265|h\.?264|h\.?265|hevc|avc)(?:$|[\s._\-\[\]【】#])`)
+var languageTags = regexp.MustCompile(`国粤双语|国语|粤语|中字|双语|内封|外挂|简繁|无水印|高清|完整版|加长版|未删减`)
+var sourceTags = regexp.MustCompile(`(?i)@[a-z0-9_]+|[\[【](?:来源|[^\]】]*字幕组)[\]】]`)
+var trailingYear = regexp.MustCompile(`\(\d{4}\)\s*$`)
 
-// ParseEpisode extracts season/episode info from a media file name.
-// Returns season=1 when unspecified.
-func ParseEpisode(name string) (Episode, bool) {
+func episodeIn(name string) (Episode, int, int, bool) {
 	base := strings.TrimSuffix(name, filepath.Ext(name))
-
-	// explicit season+episode
-	re := regexp.MustCompile(`(?i)[\s._-]*S(\d{1,2})\s*E(\d{1,3})`)
-	if m := re.FindStringSubmatch(base); m != nil {
-		s, _ := strconv.Atoi(m[1])
-		e, _ := strconv.Atoi(m[2])
-		return Episode{Season: normSeason(s), Episode: e}, true
-	}
-
-	// 1x02
-	re = regexp.MustCompile(`(?:^|[\s._-])(\d{1,2})x(\d{1,3})(?:$|[\s._-])`)
-	if m := re.FindStringSubmatch(base); m != nil {
-		s, _ := strconv.Atoi(m[1])
-		e, _ := strconv.Atoi(m[2])
-		return Episode{Season: normSeason(s), Episode: e}, true
-	}
-
-	for _, re := range []*regexp.Regexp{
-		regexp.MustCompile(`第\s*(\d{1,4})\s*[集话話回]`),
-		regexp.MustCompile(`(?i)(?:^|[\s._\-\[])(?:EP?)(\d{1,4})(?:$|[\s._\-\]])`),
-		regexp.MustCompile(`【\s*第?\s*(\d{1,4})\s*[集话話]?\s*】`),
-		regexp.MustCompile(`(?:^|[\s._\-\[\(])(\d{1,4})(?:$|[\s._\-\]\)])`),
-	} {
-		if m := re.FindStringSubmatch(base); m != nil {
-			e, err := strconv.Atoi(m[1])
-			// skip years and common quality/codec numbers
-			if err == nil && e > 0 && e < 3000 && !isNoiseNumber(e, base, m[1]) {
-				return Episode{Season: 1, Episode: e}, true
+	season := 1
+	if m := chineseSeason.FindStringSubmatch(base); m != nil {
+		if n, err := strconv.Atoi(m[1]); err == nil {
+			season = n
+		} else {
+			digits := map[rune]int{'一': 1, '二': 2, '三': 3, '四': 4, '五': 5, '六': 6, '七': 7, '八': 8, '九': 9}
+			n := 0
+			for _, r := range m[1] {
+				if r == '十' {
+					if n == 0 {
+						n = 1
+					}
+					n *= 10
+				} else {
+					n += digits[r]
+				}
+			}
+			if n > 0 {
+				season = n
 			}
 		}
 	}
-	return Episode{}, false
+	for idx, p := range episodePatterns {
+		for _, m := range p.re.FindAllStringSubmatchIndex(base, -1) {
+			a, b := m[2*p.episode], m[2*p.episode+1]
+			if idx == 1 && ((m[0] > 0 && !strings.ContainsRune(" ._-([", rune(base[m[0]-1]))) || (m[1] < len(base) && !strings.ContainsRune(" ._-)]", rune(base[m[1]])))) {
+				continue
+			}
+			if idx == 3 && m[1] < len(base) && ((base[m[1]] >= 'a' && base[m[1]] <= 'z') || (base[m[1]] >= 'A' && base[m[1]] <= 'Z')) {
+				continue
+			}
+			if b < len(base) && base[b] >= '0' && base[b] <= '9' {
+				continue
+			}
+			if idx == 5 {
+				beforeOK := a == 0 || strings.ContainsRune(" ._-([【", rune(base[a-1]))
+				afterOK := b == len(base) || strings.ContainsRune(" ._-)]】", rune(base[b]))
+				if !beforeOK || !afterOK {
+					continue
+				}
+			}
+			e, _ := strconv.Atoi(base[a:b])
+			if idx >= 4 && isNoiseNumber(e) {
+				continue
+			}
+			s := season
+			if p.season > 0 {
+				s, _ = strconv.Atoi(base[m[2*p.season]:m[2*p.season+1]])
+			}
+			return Episode{s, e}, m[0], m[1], true
+		}
+	}
+	return Episode{}, 0, 0, false
 }
-
-// isNoiseNumber rejects year-like (1900-2099) and resolution-like (480/720/1080/2160) numbers.
-func isNoiseNumber(e int, base, raw string) bool {
-	if e >= 1900 && e <= 2100 {
+func isNoiseNumber(e int) bool {
+	if e <= 0 || (e >= 1900 && e <= 2100) {
 		return true
 	}
 	switch e {
-	case 480, 576, 720, 1080, 2160, 4320:
+	case 264, 265, 480, 576, 720, 1080, 2160, 4320:
 		return true
 	}
 	return false
 }
-
-func normSeason(s int) int {
-	if s == 0 {
-		return 1
-	}
-	return s
-}
-
-// CleanTitle derives the show title from a file name by stripping
-// episode markers, quality tags, and trailing junk.
+func ParseEpisode(name string) (Episode, bool) { ep, _, _, ok := episodeIn(name); return ep, ok }
 func CleanTitle(name string) string {
 	base := strings.TrimSuffix(name, filepath.Ext(name))
-
-	// strip common noise tags
-	noise := []*regexp.Regexp{
-		regexp.MustCompile(`(?i)[\s._\-\[]*(1080p|720p|2160p|4k|2k|hdr|dv|x264|x265|h\.?264|h\.?265|hevc|avc)[\s._\-\]]*`),
-		regexp.MustCompile(`(?i)[\s._\-\[]*(国粤双语|国语|粤语|中字|双语|内封|外挂|简繁|字幕组|无水印|高清|完整版|加长版|未删减)[\s._\-\]]*`),
-		regexp.MustCompile(`\((?:\d{4})\)\s*$`), // trailing (2024)
-	}
-	for _, re := range noise {
-		base = re.ReplaceAllString(base, " ")
-	}
-
-	// cut at season/episode marker
-	cut := regexp.MustCompile(`(?i)[\s._-]*S\d{1,2}\s*E\d{1,3}`)
-	if loc := cut.FindStringIndex(base); loc != nil {
-		base = base[:loc[0]]
-	}
-	cut = regexp.MustCompile(`(?:^|[\s._-])\d{1,2}x\d{1,3}(?:$|[\s._-])`)
-	if loc := cut.FindStringIndex(base); loc != nil {
-		base = base[:loc[0]]
-	}
-	for _, re := range []*regexp.Regexp{
-		regexp.MustCompile(`【.*?】`), // strip bracketed tags first
-		regexp.MustCompile(`第\s*\d{1,4}\s*[集话話回].*$`),
-		regexp.MustCompile(`(?i)(?:^|[\s._\-\[])EP?\d{1,4}(?:$|[\s._\-\]])`),
-	} {
-		if loc := re.FindStringIndex(base); loc != nil && loc[0] > 0 {
-			base = base[:loc[0]]
-		} else if loc != nil {
-			base = base[loc[1]:]
+	_, a, b, ok := episodeIn(name)
+	if ok {
+		if strings.Trim(base[:a], " ._-#([【") == "" {
+			base = base[b:]
+		} else {
+			base = base[:a]
 		}
 	}
-
-	// collapse dots/spaces/punctuation runs to single space
-	base = strings.TrimSpace(base)
-	base = strings.Trim(base, "._- ")
-	base = strings.Join(strings.Fields(base), " ")
-	base = strings.NewReplacer(".", " ", "_", " ").Replace(base)
-	base = strings.Join(strings.Fields(base), " ")
-	return strings.TrimSpace(base)
+	base = chineseSeason.ReplaceAllString(base, "")
+	base = sourceTags.ReplaceAllString(base, " ")
+	for i := 0; i < 2; i++ {
+		base = noiseTags.ReplaceAllString(base, " ")
+	}
+	base = languageTags.ReplaceAllString(base, " ")
+	base = trailingYear.ReplaceAllString(base, "")
+	base = strings.NewReplacer(".", " ", "_", " ", "#", " ", "【", " ", "】", " ", "[", " ", "]", " ").Replace(base)
+	return strings.Trim(strings.Join(strings.Fields(base), " "), " ._-()（）")
 }
 
-// Group is a classified show: one folder in the media tree.
 type Group struct {
 	Title    string
 	Season   int
 	Episodes []EpisodeFile
 }
-
-// EpisodeFile is one episode entry pointing back to its source item.
 type EpisodeFile struct {
-	Episode   int
-	StreamKey string // file key for tgproxy stream URL
-	Name      string
-	Size      int64
+	Episode         int
+	StreamKey, Name string
+	Size            int64
 }
-
-// Key builds the stream key for a channel/message item.
-func Key(channelID int64, msgID int) string {
-	return fmt.Sprintf("%d_%d", channelID, msgID)
-}
-
-// Classify groups scanned items into shows/seasons.
-// Same-name files with different episodes are merged into one group.
-func Classify(items []Item) []Group {
-	type key struct{ title string; season int }
-	groups := map[key]*Group{}
-
-	for _, it := range items {
-		if !IsVideo(it.Name) {
-			continue
-		}
-		ep, ok := ParseEpisode(it.Name)
-		if !ok {
-			// no episode marker: treat the whole name as its own single-episode title
-			ep = Episode{Season: 1, Episode: 0}
-		}
-		title := CleanTitle(it.Name)
-		if title == "" {
-			title = it.Name
-		}
-		if ep.Episode == 0 {
-			// standalone item (movie): strip noise tags but keep distinct name
-			title = CleanTitle(it.Name)
-			if title == "" {
-				title = strings.TrimSuffix(it.Name, filepath.Ext(it.Name))
-			}
-		}
-
-		k := key{title: normalizeTitle(title), season: ep.Season}
-		g, exists := groups[k]
-		if !exists {
-			g = &Group{Title: title, Season: ep.Season}
-			groups[k] = g
-		}
-		g.Episodes = append(g.Episodes, EpisodeFile{
-			Episode:   ep.Episode,
-			StreamKey: Key(it.ChannelID, it.MessageID),
-			Name:      it.Name,
-			Size:      it.Size,
-		})
-	}
-
-	out := make([]Group, 0, len(groups))
-	for _, g := range groups {
-		sort.Slice(g.Episodes, func(i, j int) bool { return g.Episodes[i].Episode < g.Episodes[j].Episode })
-		out = append(out, *g)
-	}
-	sort.Slice(out, func(i, j int) bool { return out[i].Title < out[j].Title })
-	return out
-}
-
-func normalizeTitle(t string) string {
-	return strings.ToLower(strings.Join(strings.Fields(t), ""))
-}
-
-// Item is the media-tree input; keeps telegram package decoupled.
 type Item struct {
 	ChannelID int64
 	MessageID int
@@ -216,64 +135,103 @@ type Item struct {
 	Size      int64
 }
 
-// IsVideo checks file extension.
-func IsVideo(name string) bool {
-	switch strings.ToLower(strings.TrimPrefix(filepath.Ext(name), ".")) {
-	case "mp4", "mkv", "avi", "mov", "flv", "wmv", "webm", "m4v", "ts", "mpg", "mpeg", "rmvb", "3gp":
-		return true
+func Key(ch int64, msg int) string   { return fmt.Sprintf("%d_%d", ch, msg) }
+func normalizeTitle(t string) string { return strings.ToLower(strings.Join(strings.Fields(t), "")) }
+func readable(s string) bool {
+	for _, r := range s {
+		if unicode.IsLetter(r) || unicode.IsNumber(r) {
+			return true
+		}
 	}
 	return false
 }
 
-// SanitizeDirName makes a safe directory/file name.
+func Classify(items []Item) []Group {
+	input := append([]Item(nil), items...)
+	sort.Slice(input, func(i, j int) bool {
+		return Key(input[i].ChannelID, input[i].MessageID) < Key(input[j].ChannelID, input[j].MessageID)
+	})
+	// long: 无集号的同名文件可能是不同电影或不同预告，不能当成一集覆盖。
+	standalone := map[string]int{}
+	for _, it := range input {
+		if IsVideo(it.Name) {
+			if _, ok := ParseEpisode(it.Name); !ok {
+				standalone[normalizeTitle(CleanTitle(it.Name))]++
+			}
+		}
+	}
+	type groupKey struct {
+		title  string
+		season int
+	}
+	groups := map[groupKey]*Group{}
+	seen := map[string]bool{}
+	for _, it := range input {
+		key := Key(it.ChannelID, it.MessageID)
+		if !IsVideo(it.Name) || seen[key] {
+			continue
+		}
+		seen[key] = true
+		ep, ok := ParseEpisode(it.Name)
+		if !ok {
+			ep = Episode{1, 0}
+		}
+		title := CleanTitle(it.Name)
+		if !readable(title) {
+			title = "未命名视频 " + key
+		} else if !ok && standalone[normalizeTitle(title)] > 1 {
+			title += " [" + key + "]"
+		}
+		k := groupKey{normalizeTitle(title), ep.Season}
+		g := groups[k]
+		if g == nil {
+			g = &Group{Title: title, Season: ep.Season}
+			groups[k] = g
+		}
+		g.Episodes = append(g.Episodes, EpisodeFile{ep.Episode, key, it.Name, it.Size})
+	}
+	out := make([]Group, 0, len(groups))
+	for _, g := range groups {
+		sort.Slice(g.Episodes, func(i, j int) bool {
+			a, b := g.Episodes[i], g.Episodes[j]
+			if a.Episode == b.Episode {
+				return a.StreamKey < b.StreamKey
+			}
+			return a.Episode < b.Episode
+		})
+		out = append(out, *g)
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].Title == out[j].Title {
+			return out[i].Season < out[j].Season
+		}
+		return out[i].Title < out[j].Title
+	})
+	return out
+}
+func IsVideo(name string) bool {
+	switch strings.ToLower(filepath.Ext(name)) {
+	case ".mp4", ".mkv", ".avi", ".mov", ".flv", ".wmv", ".webm", ".m4v", ".ts", ".mpg", ".mpeg", ".rmvb", ".3gp":
+		return true
+	}
+	return false
+}
 func SanitizeDirName(s string) string {
 	var b strings.Builder
 	for _, r := range s {
-		if r < 32 || r == '/' || r == '\\' || r == ':' || r == '*' || r == '?' || r == '"' || r == '<' || r == '>' || r == '|' {
+		if r < 32 || strings.ContainsRune(`/\:*?"<>|`, r) {
 			b.WriteRune(' ')
 		} else {
 			b.WriteRune(r)
 		}
 	}
-	out := strings.TrimSpace(b.String())
-	if out == "" {
+	out := strings.Trim(b.String(), ". ")
+	if !readable(out) {
 		out = "unknown"
 	}
-	// avoid trailing dots (Windows compat)
-	out = strings.TrimRight(out, ". ")
+	// long: 为季集号和来源后缀保留空间，避免中文长文件名超过文件系统单段限制。
+	if len(out) > 160 {
+		out = shortName(out)
+	}
 	return out
 }
-
-// BuildTree writes the media tree under root:
-//
-//	root/Show Title/Season 01/Show Title S01E02.strm
-//	root/Show Title/tvshow.nfo
-//	root/Show Title/Season 01/... (episode strm files)
-//
-// strmBase e.g. "http://192.168.1.2:8080" — full URL becomes strmBase + /stream/<key>/<name>
-func BuildTree(root string, groups []Group, strmBase string) (int, error) {
-	count := 0
-	for _, g := range groups {
-		dir := filepath.Join(root, SanitizeDirName(g.Title), fmt.Sprintf("Season %02d", g.Season))
-		if err := mkdir(dir); err != nil {
-			return count, err
-		}
-		// tvshow.nfo so Jellyfin treats folder as a show
-		nfo := fmt.Sprintf("<tvshow><title>%s</title></tvshow>", xmlEscape(g.Title))
-		if err := writeFile(filepath.Join(root, SanitizeDirName(g.Title), "tvshow.nfo"), nfo); err != nil {
-			return count, err
-		}
-		for _, ef := range g.Episodes {
-			name := g.Title
-			fname := fmt.Sprintf("%s S%02dE%02d.strm", SanitizeDirName(name), g.Season, ef.Episode)
-			url := fmt.Sprintf("%s/stream/%s", strmBase, ef.StreamKey)
-			if err := writeFile(filepath.Join(dir, fname), url); err != nil {
-				return count, err
-			}
-			count++
-		}
-	}
-	return count, nil
-}
-
-func mkdir(p string) error { return osMkdirAll(p, 0o755) }

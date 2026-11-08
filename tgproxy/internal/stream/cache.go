@@ -5,265 +5,245 @@ import (
 	"context"
 	"errors"
 	"io"
-	"math"
 	"sync"
 	"sync/atomic"
 	"time"
 )
 
-// ChunkSource fetches one aligned chunk of data. offset is chunk-aligned.
 type ChunkSource interface {
-	// Chunk fills b (b.len == chunk size) with data starting at offset.
-	// Returns bytes read (may be less at EOF).
-	Chunk(ctx context.Context, offset int64, b []byte) (int64, error)
+	Chunk(context.Context, int64, []byte) (int64, error)
 }
 
 var ErrNotFound = errors.New("stream not found")
 
-// chunkKey identifies one chunk of one file.
 type chunkKey struct {
 	File   string
 	Offset int64
 }
-
-// entry is a cached chunk.
 type entry struct {
-	key   chunkKey
-	data  []byte
-	n     int64 // valid bytes
-	ready chan struct{}
-	err   error
+	key         chunkKey
+	data        []byte
+	n           int64
+	ready       chan struct{}
+	err         error
+	cancel      context.CancelFunc
+	waiters     int
+	speculative bool
+	done        bool
+	abandoned   bool
 }
 
-// Cache is an LRU chunk cache with single-flight fetch and sequential prefetch.
 type Cache struct {
-	mu       sync.Mutex
-	maxBytes int64
-	size     int64
-	items    map[chunkKey]*list.Element
-	order    *list.List // front = hot
-	src      ChunkSource
-	chunk    int64
-
-	inflight map[chunkKey]*entry
-
-	// prefetch tracking: last requested chunk offset per file
-	lastAccess map[string]int64
-	prefetchN  int
-
-	// stats
-	Hits      atomic.Int64
-	Misses    atomic.Int64
-	BytesRead atomic.Int64
+	mu                         sync.Mutex
+	maxBytes, size, chunk      int64
+	items                      map[chunkKey]*list.Element
+	order                      *list.List
+	src                        ChunkSource
+	inflight                   map[chunkKey]*entry
+	prefetchN                  int
+	demandSlots, prefetchSlots chan struct{}
+	ctx                        context.Context
+	cancel                     context.CancelFunc
+	fetchTimeout               time.Duration
+	Hits, Misses, BytesRead    atomic.Int64
 }
 
-func NewCache(src ChunkSource, chunkSize int64, maxBytes int64, prefetch int) *Cache {
+func NewCache(src ChunkSource, chunkSize, maxBytes int64, prefetch int) *Cache {
+	if chunkSize <= 0 {
+		chunkSize = 512 << 10
+	}
+	if maxBytes < chunkSize {
+		maxBytes = chunkSize
+	}
 	if prefetch < 0 {
 		prefetch = 0
 	}
-	return &Cache{
-		maxBytes:   maxBytes,
-		items:      make(map[chunkKey]*list.Element),
-		order:      list.New(),
-		src:        src,
-		chunk:      chunkSize,
-		inflight:   make(map[chunkKey]*entry),
-		lastAccess: make(map[string]int64),
-		prefetchN:  prefetch,
+	if prefetch > 16 {
+		prefetch = 16
 	}
+	ctx, cancel := context.WithCancel(context.Background())
+	return &Cache{src: src, chunk: chunkSize, maxBytes: maxBytes, prefetchN: prefetch,
+		items: map[chunkKey]*list.Element{}, inflight: map[chunkKey]*entry{}, order: list.New(),
+		demandSlots: make(chan struct{}, 8), prefetchSlots: make(chan struct{}, 2), ctx: ctx, cancel: cancel, fetchTimeout: 30 * time.Second}
 }
+func (c *Cache) Close() { c.cancel() }
 
 func (c *Cache) evictLocked() {
 	for c.size > c.maxBytes && c.order.Len() > 0 {
-		e := c.order.Back()
-		if e == nil {
-			return
-		}
-		ce := e.Value.(*entry)
-		c.order.Remove(e)
-		delete(c.items, ce.key)
-		c.size -= int64(len(ce.data))
-	}
-}
-
-// get returns the chunk entry, fetching via single-flight if absent.
-func (c *Cache) get(ctx context.Context, key chunkKey, fetch bool) (*entry, error) {
-	return c.getWith(ctx, c.src, key, fetch)
-}
-
-// getWith fetches using the given source.
-func (c *Cache) getWith(ctx context.Context, src ChunkSource, key chunkKey, fetch bool) (*entry, error) {
-	c.mu.Lock()
-	if el, ok := c.items[key]; ok {
-		c.order.MoveToFront(el)
-		c.mu.Unlock()
-		c.Hits.Add(1)
+		el := c.order.Back()
 		e := el.Value.(*entry)
-		<-e.ready
-		return e, e.err
+		delete(c.items, e.key)
+		c.order.Remove(el)
+		c.size -= int64(len(e.data))
 	}
+}
 
-	if !fetch {
-		c.mu.Unlock()
-		return nil, ErrNotFound
+func (c *Cache) lookupLocked(key chunkKey) *entry {
+	if el := c.items[key]; el != nil {
+		c.order.MoveToFront(el)
+		c.Hits.Add(1)
+		return el.Value.(*entry)
 	}
+	return c.inflight[key]
+}
 
-	if e, ok := c.inflight[key]; ok {
-		c.mu.Unlock()
-		c.Misses.Add(1)
-		<-e.ready
-		return e, e.err
-	}
-
-	e := &entry{key: key, data: make([]byte, c.chunk), ready: make(chan struct{})}
+func (c *Cache) startLocked(src ChunkSource, key chunkKey, expected int64, speculative bool, slots chan struct{}) *entry {
+	ctx, cancel := context.WithTimeout(c.ctx, c.fetchTimeout)
+	e := &entry{key: key, data: make([]byte, c.chunk), ready: make(chan struct{}), cancel: cancel, speculative: speculative}
 	c.inflight[key] = e
-	c.mu.Unlock()
 	c.Misses.Add(1)
-
 	go func() {
-		n, err := src.Chunk(context.Background(), key.Offset, e.data)
-		e.n = n
-		e.err = err
-		close(e.ready)
-
+		defer func() { cancel(); <-slots }()
+		n, err := src.Chunk(ctx, key.Offset, e.data)
+		// long: 只有完整逻辑块能进入缓存，网络中断或提前 EOF 不能污染后续重试。
+		if n != expected && (err == nil || errors.Is(err, io.EOF)) {
+			err = io.ErrUnexpectedEOF
+		}
+		if n == expected && errors.Is(err, io.EOF) {
+			err = nil
+		}
 		c.mu.Lock()
-		delete(c.inflight, key)
-		// store result even on error? store only on success or EOF-with-data
-		if n > 0 {
+		e.n, e.err, e.done = n, err, true
+		if c.inflight[key] == e {
+			delete(c.inflight, key)
+		}
+		if err == nil && n > 0 && !e.abandoned {
 			c.items[key] = c.order.PushFront(e)
 			c.size += int64(len(e.data))
 			c.evictLocked()
 		}
+		close(e.ready)
 		c.mu.Unlock()
 	}()
-
-	<-e.ready
-	return e, e.err
+	return e
 }
 
-// ReadAt copies min(len(dst), remaining) bytes of file starting at off.
-// total is the logical file size. Sequential prefetch is scheduled on forward seeks.
+func (c *Cache) wait(ctx context.Context, e *entry) (*entry, error) {
+	defer func() {
+		c.mu.Lock()
+		e.waiters--
+		// long: 同块仍有其他播放器等待时保留共享下载，最后一个等待者离开才取消。
+		if e.waiters == 0 && !e.speculative && !e.done {
+			e.abandoned = true
+			e.cancel()
+			if c.inflight[e.key] == e {
+				delete(c.inflight, e.key)
+			}
+		}
+		c.mu.Unlock()
+	}()
+	select {
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	case <-c.ctx.Done():
+		return nil, c.ctx.Err()
+	case <-e.ready:
+		return e, e.err
+	}
+}
+
+func (c *Cache) getWith(ctx context.Context, src ChunkSource, key chunkKey, expected int64) (*entry, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	c.mu.Lock()
+	if e := c.lookupLocked(key); e != nil {
+		e.waiters++
+		c.mu.Unlock()
+		return c.wait(ctx, e)
+	}
+	c.mu.Unlock()
+	// long: 先获得下载名额再分配缓冲区，拖动和多客户端不会无限堆积分块内存。
+	select {
+	case c.demandSlots <- struct{}{}:
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	case <-c.ctx.Done():
+		return nil, c.ctx.Err()
+	}
+	c.mu.Lock()
+	e := c.lookupLocked(key)
+	if e != nil {
+		<-c.demandSlots
+	} else {
+		e = c.startLocked(src, key, expected, false, c.demandSlots)
+	}
+	e.waiters++
+	c.mu.Unlock()
+	return c.wait(ctx, e)
+}
+
 func (c *Cache) ReadAt(ctx context.Context, file string, off int64, dst []byte, total int64) (int, error) {
 	return c.readAtWith(ctx, c.src, file, off, dst, total)
 }
-
-// readAtWith uses a per-request chunk source (registered under the same file key).
 func (c *Cache) readAtWith(ctx context.Context, src ChunkSource, file string, off int64, dst []byte, total int64) (int, error) {
+	if off < 0 || total < 0 {
+		return 0, errors.New("invalid file offset or size")
+	}
+	if len(dst) == 0 {
+		return 0, nil
+	}
 	if off >= total {
 		return 0, io.EOF
 	}
-	c.schedulePrefetch(src, file, off, total)
-
-	var copied int
-	for copied < len(dst) {
-		if off >= total {
-			break
-		}
-		align := (off / c.chunk) * c.chunk
-		e, err := c.getWith(ctx, src, chunkKey{File: file, Offset: align}, true)
-		if err != nil && !errors.Is(err, io.EOF) {
+	copied := 0
+	for copied < len(dst) && off < total {
+		align := off / c.chunk * c.chunk
+		e, err := c.getWith(ctx, src, chunkKey{file, align}, min(c.chunk, total-align))
+		if err != nil {
 			return copied, err
 		}
-		<-e.ready
-		if e.err != nil && e.n == 0 {
-			if copied > 0 {
-				return copied, nil
-			}
-			return 0, e.err
-		}
-
-		// bytes within chunk valid for the logical file
-		start := off - align
-		if start >= e.n {
-			// beyond EOF of actual source
-			if copied > 0 {
-				return copied, io.EOF
-			}
-			return 0, io.EOF
-		}
-		end := e.n
-		if limit := total - align; end > limit {
-			end = limit
-		}
-		n := copy(dst[copied:], e.data[start:end])
-		c.BytesRead.Add(int64(n))
+		n := copy(dst[copied:], e.data[off-align:e.n])
 		copied += n
 		off += int64(n)
+		c.BytesRead.Add(int64(n))
+		// long: 优先满足正在播放/拖动的块，预取只使用独立的两个低优先级名额。
+		c.schedulePrefetch(src, file, align, total)
+	}
+	if copied < len(dst) {
+		return copied, io.EOF
 	}
 	return copied, nil
 }
-
-// schedulePrefetch kicks off background fetches of the next N chunks after the
-// accessed one, only when access is roughly sequential (or first access).
-func (c *Cache) schedulePrefetch(src ChunkSource, file string, off int64, total int64) {
-	if c.prefetchN <= 0 {
-		return
-	}
-	alignment := (off / c.chunk) * c.chunk
-
-	c.mu.Lock()
-	last, seen := c.lastAccess[file]
-	c.lastAccess[file] = alignment
-	// sequential if this access is within one chunk of last alignment, or first access
-	sequential := !seen || math.Abs(float64(alignment-last)) <= float64(c.chunk*2)
-	c.mu.Unlock()
-
-	if !sequential {
-		return
-	}
-
+func (c *Cache) schedulePrefetch(src ChunkSource, file string, off, total int64) {
 	for i := 1; i <= c.prefetchN; i++ {
-		po := alignment + int64(i)*c.chunk
-		if po >= total {
-			break
+		next := off + int64(i)*c.chunk
+		if next >= total {
+			return
 		}
-		key := chunkKey{File: file, Offset: po}
+		select {
+		case <-c.ctx.Done():
+			return
+		default:
+		}
+		select {
+		case c.prefetchSlots <- struct{}{}:
+		default:
+			return
+		}
+		key := chunkKey{file, next}
 		c.mu.Lock()
-		_, cached := c.items[key]
-		_, flying := c.inflight[key]
-		if !cached && !flying {
-			// mark inflight manually to avoid dup goroutines
-			e := &entry{key: key, data: make([]byte, c.chunk), ready: make(chan struct{})}
-			c.inflight[key] = e
-			c.mu.Unlock()
-			go func() {
-				n, err := src.Chunk(context.Background(), key.Offset, e.data)
-				e.n = n
-				e.err = err
-				close(e.ready)
-				c.mu.Lock()
-				delete(c.inflight, key)
-				if n > 0 {
-					c.items[key] = c.order.PushFront(e)
-					c.size += int64(len(e.data))
-					c.evictLocked()
-				}
-				c.mu.Unlock()
-			}()
-			continue
+		if c.lookupLocked(key) != nil {
+			<-c.prefetchSlots
+		} else {
+			c.startLocked(src, key, min(c.chunk, total-next), true, c.prefetchSlots)
 		}
 		c.mu.Unlock()
 	}
 }
-
-// Warm requests a chunk without blocking caller (used to pre-trigger fetch).
-func (c *Cache) Stat() (hits, misses int64, bytesCached int64) {
+func (c *Cache) Stat() (int64, int64, int64) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return c.Hits.Load(), c.Misses.Load(), c.size
 }
-
-// WaitReady blocks until inflight for a key completes (test helper).
 func (c *Cache) WaitReady(key chunkKey) {
 	c.mu.Lock()
-	e, ok := c.inflight[key]
+	e := c.inflight[key]
 	c.mu.Unlock()
-	if ok {
+	if e != nil {
 		<-e.ready
 	}
 }
-
-// IdleWait waits until no inflight fetches remain (test helper).
 func (c *Cache) IdleWait(timeout time.Duration) bool {
 	deadline := time.Now().Add(timeout)
 	for time.Now().Before(deadline) {

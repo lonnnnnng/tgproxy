@@ -11,3 +11,11 @@ tgproxy/data/
 *.session
 config.json
 library.json
+
+# local visual verification and design-session scratch files
+.playwright-cli/
+.impeccable/review/
+.impeccable/mocks/
+.impeccable/questions/
+.impeccable/work/
+.impeccable/build/

@@ -1,5 +1,16 @@
 # 项目进度
 
+## 2026-11-08 后续排障与修复
+
+- 已修复 Jellyfin 空库与视频尾块截断，接通扫描完成 → 自动重建 → Jellyfin 刷新的流程。
+- 已修复历史分页、同名来源覆盖、缓存取消/错误重试、DC 迁移/引用刷新、保存错误与连接生命周期问题。
+- 完整历史已扫描 31,878 个视频，31,878 个独立 STRM 与索引逐项一致；Jellyfin 正在后台处理新批次。
+- 全量测试、race、vet、构建以及线上 Range/ffprobe/Jellyfin 分段流已验证。详细边界与最终扫描结果见 [审计记录](AUDIT-20261108.md)。
+- TDL 连接池修复已推送到个人 fork 分支；tgproxy 当前 go.mod 固定引用 TDL 与 gotd 两个个人 fork commit，本地 Linux/amd64 静态二进制构建通过。
+- 以下为初次开发阶段的历史记录，旧的待办及数量不代表后续修复状态。
+
+---
+
 > 更新：2026-11-08 20:40
 
 ## 总体进度
@@ -77,8 +88,8 @@
 
 ## 已知问题 / 注意事项
 
-- `go.mod` 有本地 replace：`github.com/iyear/tdl/core => ../dev/tdl-src/core`——在服务器上编译需带 `dev/tdl-src`，或去掉 replace 改用发布版。当前用交叉编译推二进制，无影响
+- 历史问题：开发阶段曾用本地 replace 引用 `dev/tdl-src/core`；2026-11-08 已改成个人 fork 的固定 commit，新的构建不依赖该目录。
 - 服务器 `lee` 用户 sudo 需密码（脚本里不可交互），故 tgproxy 用 **user-level systemd**（`systemctl --user`），已确认 Linger=yes（开机自启不依赖登录会话）
 - Jellyfin 12.4 与 v10 API 差异较多（向导端点、认证头、stream 路由），踩坑记录见 DEPLOY.md
-- Telegram 文件 >2GB 或 CDN 重定向（`upload.getFileCdnRedirect`）暂不支持——目前返回错误，遇到再实现 CDN 分支
+- Telegram CDN 重定向（`upload.getFileCdnRedirect`）仍暂不支持；超过 2 GiB 本身不是拒绝条件。
 - 媒体树里无集号文件（电影）命名保留清洗后的名字（如 "星际穿越 Interstellar 2014"），集号 S01E00

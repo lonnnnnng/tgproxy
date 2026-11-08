@@ -23,6 +23,25 @@ ssh -i <私钥> lee@192.168.1.2   # 私钥路径不入库
 
 服务器上已有 `~/shipin`（影视聚合 Go 服务）、`~/duanju`，与本项目无关。
 
+## 本次修复后的同步配置
+
+`~/tgproxy/data/config.json` 可增加以下字段，通知地址必须由 tgproxy 所在主机访问：
+
+```json
+{
+  "jellyfin_url": "http://127.0.0.1:8097",
+  "jellyfin_api_key": "<Jellyfin 专用 API Key>"
+}
+```
+
+此片段需合并到已有配置，不能覆盖 Telegram 会话。两项同时配置；配置文件保持 `0600`，不入库。线上已配置专用 tgproxy API Key，重建后会调用 `POST /Library/Refresh`。Jellyfin 的“TG频道”库已开启实时监控。
+
+flag 优先于配置文件；`listen`、`media_root`、`strm_base` 现在均生效。配置保存采用原子替换。`chunk_size` 必须在 4096～1048576 内且整除 1048576，缓存不得小于一块；预取数范围为 0～16。
+
+`data/peers-*.json` 保存按登录会话隔离的频道访问缓存，同样不外传。媒体根下 `.tgproxy-manifest.json` 记录项目输出所有权和索引版本；旧文件备份在 `~/tgproxy/media.backups/`。Docker 的媒体根目录不能整体 rename 替换。
+
+本轮更新前的备份位于 `~/tgproxy/diagnostics/before-auditfix-20261108-214922/`，含旧二进制、配置、索引和媒体树归档。Jellyfin 数据库已提交内容副本在备份时 WAL 为空，完整性检查为 `ok`。备份目录为 `0700`，凭据文件为 `0600`。回退或恢复媒体时应按文件/清单操作，保留挂载根目录。
+
 ## tgproxy
 
 ### 目录
@@ -91,7 +110,7 @@ docker run -d --name jellyfin \
 ### 已配置
 
 - 管理员：`jellyfin / <密码见本地记录，不入库>`，UI zh-CN / 元数据 CN
-- 媒体库 **"TG频道"**（tvshows）→ `/media/tgproxy`（即宿主 `~/tgproxy/media`，只读挂载）
+- 媒体库 **"TG频道"**（tvshows）→ `/media/tgproxy`（即宿主 `~/tgproxy/media`，只读挂载）；已启用实时监控
 - **转码已禁用**（双保险）：
   1. `/System/Configuration/encoding`：`HardwareAccelerationType=none` + `EnableHardwareEncoding=False`
   2. 用户 jellyfin Policy：`EnableVideoPlaybackTranscoding=False` + `EnableAudioPlaybackTranscoding=False`
@@ -115,6 +134,7 @@ docker run -d --name jellyfin \
 
 ## 备份要点
 
-- `~/tgproxy/data/`（凭证、session、频道库）
+- `~/tgproxy/data/`（凭证、session、频道索引、频道访问缓存）
+- `~/tgproxy/media/.tgproxy-manifest.json` 和 `~/tgproxy/media.backups/`（输出清单及旧文件备份）
 - `~/jellyfin/config/`
 - TG session 泄露 = 账号被盗，勿外传

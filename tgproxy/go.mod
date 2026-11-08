@@ -2,8 +2,6 @@ module tgproxy
 
 go 1.25.8
 
-replace github.com/iyear/tdl/core => ../dev/tdl-src/core
-
 require (
 	github.com/gotd/td v0.163.0
 	github.com/iyear/tdl/core v0.0.0-00010101000000-000000000000
@@ -51,3 +49,7 @@ require (
 	gopkg.in/yaml.v2 v2.4.0 // indirect
 	rsc.io/qr v0.2.0 // indirect
 )
+
+replace github.com/iyear/tdl/core => github.com/lonnnnnng/tdl/core v0.0.0-20261108145415-09ffd071bb09
+
+replace github.com/gotd/td => github.com/lonnnnnng/td v0.0.0-20261107182807-8c39a2b01c82

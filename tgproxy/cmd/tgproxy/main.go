@@ -4,7 +4,9 @@ import (
 	"context"
 	"errors"
 	"flag"
+	"fmt"
 	"log"
+	"mime"
 	"net"
 	"net/http"
 	"os"
@@ -12,11 +14,11 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
-	"sync"
 	"syscall"
 	"time"
 
 	"tgproxy/internal/config"
+	"tgproxy/internal/jellyfin"
 	"tgproxy/internal/store"
 	"tgproxy/internal/stream"
 	"tgproxy/internal/telegram"
@@ -34,15 +36,28 @@ func main() {
 	if err != nil {
 		log.Fatalf("load config: %v", err)
 	}
+	explicit := map[string]bool{}
+	flag.Visit(func(f *flag.Flag) { explicit[f.Name] = true })
+	if !explicit["listen"] {
+		*listen = cfg.Listen
+	}
+	if !explicit["media"] {
+		*mediaDir = cfg.MediaRoot
+	}
+	if !explicit["strm-base"] {
+		*strmBase = cfg.StrmBase
+	}
 	if *mediaDir == "" {
 		*mediaDir = filepath.Join(*dataDir, "media")
 	}
-	base := *strmBase
+	cfg.Listen, cfg.MediaRoot, cfg.StrmBase = *listen, *mediaDir, *strmBase
+	if err := cfg.Validate(); err != nil {
+		log.Fatal(err)
+	}
+	base := strings.TrimRight(*strmBase, "/")
 	if base == "" {
-		base = "http://" + lanIP() + ":8080"
-		if p := strings.LastIndex(*listen, ":"); p >= 0 && p != len(*listen)-1 {
-			base = "http://" + lanIP() + (*listen)[p:]
-		}
+		_, port, _ := net.SplitHostPort(*listen)
+		base = "http://" + net.JoinHostPort(lanIP(), port)
 	}
 
 	if err := os.MkdirAll(*mediaDir, 0o755); err != nil {
@@ -59,146 +74,72 @@ func main() {
 	rootCtx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	// tgClient is created (or recreated) whenever credentials change.
-	var tgMu sync.Mutex
-	var tgClient *telegram.Client
-	startClient := func(appID int, appHash string) {
-		tgMu.Lock()
-		defer tgMu.Unlock()
-		tgClient = telegram.New(appID, appHash)
-	}
-	connectClient := func(sess []byte) {
-		go func() {
-			runCtx, runCancel := context.WithCancel(rootCtx)
-			defer runCancel()
-			tgMu.Lock()
-			c := tgClient
-			tgMu.Unlock()
-			if c == nil {
-				return
-			}
-			if err := c.Connect(runCtx, sess, nil); err != nil && !errors.Is(err, context.Canceled) {
-				log.Printf("telegram connect: %v", err)
-			}
-		}()
-	}
-	if cfg.AppID != 0 && cfg.AppHash != "" {
-		startClient(cfg.AppID, cfg.AppHash)
-	}
-
-	// Resolve for streaming: look up item, then fetch file handle from telegram.
-	src := keySource{resolve: func(file string) (stream.ChunkSource, int64, string, error) {
-		chID, msgID, err := parseStreamKey(file)
+	defer cache.Close()
+	app := &application{cfg: cfg, dataDir: *dataDir, ctx: rootCtx}
+	app.client = telegram.New(cfg.AppID, cfg.AppHash, *dataDir)
+	rawSource := keySource{resolve: func(ctx context.Context, file string) (stream.ChunkSource, int64, string, error) {
+		ch, msg, err := parseStreamKey(file)
+		if err != nil {
+			return nil, 0, "", stream.ErrNotFound
+		}
+		c := app.currentTG()
+		if c == nil || !c.Connected() {
+			return nil, 0, "", errors.New("Telegram 未连接")
+		}
+		h, err := c.ChunkFile(ctx, ch, msg)
 		if err != nil {
 			return nil, 0, "", err
 		}
-		tgMu.Lock()
-		c := tgClient
-		tgMu.Unlock()
-		if c == nil {
-			return nil, 0, "", errors.New("telegram not configured")
-		}
-		it, ok := lib.FindItem(chID, msgID)
+		it, ok := lib.FindItem(ch, msg)
 		if !ok {
-			return nil, 0, "", errors.New("unknown file; scan channels first")
+			return nil, 0, "", stream.ErrNotFound
 		}
-		ctx, cancel := context.WithTimeout(rootCtx, 60*time.Second)
-		defer cancel()
-		h, err := c.ChunkFile(ctx, chID, msgID)
-		if err != nil {
-			return nil, 0, "", err
+		if it.MIME == "" {
+			it.Name = h.Name
 		}
-		cs := c.ChunkSource(h, cfg.ChunkSize)
-		ctype := mimeOf(it)
-		return cs, h.Size, ctype, nil
+		return c.ChunkSource(h, cfg.ChunkSize), h.Size, mimeOf(it), nil
 	}}
-
-	// Login flow: the telegram client keeps a persistent login session so the
-	// code's phone_code_hash survives between "send code" and "sign in".
-	currentTG := func() *telegram.Client {
-		tgMu.Lock()
-		defer tgMu.Unlock()
-		return tgClient
-	}
-	var loginMu chan struct{} = make(chan struct{}, 1)
-	withLoginClient := func(fn func(c *telegram.Client) error) error {
-		select {
-		case loginMu <- struct{}{}:
-			defer func() { <-loginMu }()
-		default:
-			return errors.New("another login step is in progress")
+	resolved := stream.NewCachedSource(rawSource, time.Minute, 128)
+	app.resolved = resolved
+	defer resolved.Close()
+	// long: 每次请求仍核对索引，删除频道后即刻停用旧入口；仅复用 Telegram 文件句柄。
+	src := keySource{invalidate: func(file string) {
+		ch, msg, err := parseStreamKey(file)
+		if err == nil {
+			resolved.Invalidate(fmt.Sprintf("%d_%d", ch, msg))
 		}
-		c := currentTG()
-		if c == nil {
-			return errors.New("api credentials not configured; set them first")
+	}, resolve: func(ctx context.Context, file string) (stream.ChunkSource, int64, string, error) {
+		ch, msg, err := parseStreamKey(file)
+		if err != nil {
+			return nil, 0, "", stream.ErrNotFound
 		}
-		return fn(c)
-	}
-	sendCode := func(ctx context.Context, phone string) error {
-		return withLoginClient(func(c *telegram.Client) error {
-			return c.SendCode(ctx, phone)
-		})
-	}
-	signIn := func(ctx context.Context, code string) error {
-		return withLoginClient(func(c *telegram.Client) error {
-			return c.SignIn(ctx, code)
-		})
-	}
-	submitPassword := func(ctx context.Context, password string) error {
-		return withLoginClient(func(c *telegram.Client) error {
-			return c.SubmitPassword(ctx, password)
-		})
-	}
-	onLoginSuccess := func() []byte {
-		c := currentTG()
-		if c == nil {
-			return nil
+		if _, ok := lib.FindItem(ch, msg); !ok {
+			return nil, 0, "", stream.ErrNotFound
 		}
-		sess := c.Session()
-		if len(sess) == 0 {
-			return nil
-		}
-		cfg.Session = sess
-		if err := config.Save(*dataDir, cfg); err != nil {
-			log.Printf("save session: %v", err)
-			return nil
-		}
-		// Restart long-running client with the new session.
-		connectClient(sess)
-		return sess
-	}
-
-	saveCredentials := func(ctx context.Context, appID int, appHash string) error {
-		cfg.AppID, cfg.AppHash = appID, appHash
-		if err := config.Save(*dataDir, cfg); err != nil {
-			return err
-		}
-		startClient(appID, appHash)
-		if len(cfg.Session) > 0 {
-			connectClient(cfg.Session)
-		}
-		return nil
-	}
-	hasCredentials := func() bool {
-		return currentTG() != nil
+		return resolved.Resolve(ctx, fmt.Sprintf("%d_%d", ch, msg))
+	}}
+	var notify func(context.Context) error
+	if cfg.JellyfinURL != "" {
+		notify = func(ctx context.Context) error { return jellyfin.Refresh(ctx, cfg.JellyfinURL, cfg.JellyfinAPIKey) }
 	}
 
 	mux := http.NewServeMux()
 	mux.Handle("/stream/", http.StripPrefix("/stream/", cache.Handler(src)))
 	mux.Handle("/", web.NewServer(web.Deps{
 		Store:           lib,
-		TGFn:            currentTG,
+		TGFn:            app.currentTG,
+		Context:         rootCtx,
+		NotifyJellyfin:  notify,
 		StrmBase:        base,
 		MediaDir:        *mediaDir,
-		SendCode:        sendCode,
-		SignIn:          signIn,
-		SubmitPassword:  submitPassword,
-		OnLoginSuccess:  onLoginSuccess,
-		SaveCredentials: saveCredentials,
-		HasCredentials:  hasCredentials,
+		SendCode:        app.sendCode,
+		SignIn:          app.signIn,
+		SubmitPassword:  app.submitPassword,
+		SaveCredentials: app.saveCredentials,
+		HasCredentials:  func() bool { return app.currentTG() != nil },
 	}).Handler())
 
-	srv := &http.Server{Addr: *listen, Handler: mux}
+	srv := &http.Server{Addr: *listen, Handler: mux, ReadHeaderTimeout: 10 * time.Second, ReadTimeout: 30 * time.Second, IdleTimeout: 90 * time.Second, MaxHeaderBytes: 32 << 10}
 	go func() {
 		log.Printf("tgproxy listening on %s (strm base %s, media %s)", *listen, base, *mediaDir)
 		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
@@ -208,7 +149,9 @@ func main() {
 
 	// Restore session on boot: connect if we have one.
 	if cfg.AppID != 0 && cfg.AppHash != "" && len(cfg.Session) > 0 {
-		connectClient(cfg.Session)
+		app.mu.Lock()
+		app.connectLocked(cfg.Session)
+		app.mu.Unlock()
 	}
 
 	sig := make(chan os.Signal, 1)
@@ -216,6 +159,7 @@ func main() {
 	<-sig
 	log.Println("shutting down")
 	cancel()
+	app.close()
 	shCtx, shCancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer shCancel()
 	srv.Shutdown(shCtx)
@@ -259,7 +203,7 @@ func parseStreamKey(file string) (int64, int, error) {
 		return 0, 0, errors.New("bad channel id in stream key")
 	}
 	msg, err := strconv.Atoi(parts[1])
-	if err != nil {
+	if err != nil || msg <= 0 {
 		return 0, 0, errors.New("bad message id in stream key")
 	}
 	return ch, msg, nil
@@ -267,16 +211,26 @@ func parseStreamKey(file string) (int64, int, error) {
 
 // keySource adapts a resolve func to stream.Source.
 type keySource struct {
-	resolve func(file string) (stream.ChunkSource, int64, string, error)
+	invalidate func(string)
+	resolve    func(context.Context, string) (stream.ChunkSource, int64, string, error)
 }
 
-func (k keySource) Resolve(file string) (stream.ChunkSource, int64, string, error) {
-	return k.resolve(file)
+func (k keySource) Resolve(ctx context.Context, file string) (stream.ChunkSource, int64, string, error) {
+	return k.resolve(ctx, file)
 }
 
 func mimeOf(it store.Item) string {
 	if it.MIME != "" {
 		return it.MIME
 	}
-	return "video/mp4"
+	if typ := mime.TypeByExtension(strings.ToLower(filepath.Ext(it.Name))); typ != "" {
+		return typ
+	}
+	return "application/octet-stream"
+}
+
+func (k keySource) Invalidate(file string) {
+	if k.invalidate != nil {
+		k.invalidate(file)
+	}
 }

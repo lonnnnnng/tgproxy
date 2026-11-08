@@ -1,58 +1,58 @@
-# tgproxy 项目总览
+# tgproxy
 
-> Telegram 频道媒体 → 统一入口 → Jellyfin 媒体库 的自建代理服务
-> 更新日期：2026-11-08
+将多个 Telegram 频道的视频汇总成 Jellyfin 可读取的媒体树，播放时按 HTTP Range 拉取所需分块，支持快进、拖动和缓存复用。
 
-## 项目目标（4 项任务）
+## 当前部署
 
-1. ✅ **Jellyfin 服务端**：部署在服务器 `192.168.1.2`（用户 lee），端口 **8097**，管理员 `jellyfin / <密码见本地记录，不入库>`
-2. ✅ **tgproxy 部署**：多 TG 频道源统一入口 + 自建拉流层（优化 Range 请求，支持进度条拖动）+ 媒体树（同名不同集归类）+ 供 Jellyfin 使用
-3. ✅ **关闭服务器转码**：解码由本地客户端/网页完成
-4. ⏳ **手机客户端**：等用户登录 TG、扫描频道后配置（地址 `http://192.168.1.2:8097`，账号同上）
+- 控制台：<http://192.168.1.2:8080/>
+- Jellyfin：<http://192.168.1.2:8097/>
+- tgproxy：服务器用户 `lee` 的 systemd user 服务。
+- 媒体目录：`/home/lee/tgproxy/media`，只读挂载到 Jellyfin 的 `/media/tgproxy`。
+- Jellyfin 已关闭音视频转码，已启用该媒体库实时监控，并接通重建后的扫描通知。
 
-## 当前状态（2026-11-08 20:40）
+2026-11-08 已修复空库、视频尾块截断、历史扫描提前停止、同名资源覆盖、缓存取消与错误恢复等问题，详见 [排障与验收记录](docs/AUDIT-20261108.md)。
 
-| 项目 | 状态 | 位置 |
-|------|------|------|
-| 本地开发 | ✅ 完成，测试全过 | `/Users/long/Documents/PiProjects/tgproxy/tgproxy` |
-| 服务器 Jellyfin | ✅ 运行中 | 容器 `jellyfin`，端口 8097 |
-| 服务器 tgproxy | ✅ 运行中（systemd user 服务） | `~/tgproxy/tgproxy`，端口 8080 |
-| Telegram 登录 | ⏳ 等用户网页登录（手机号+验证码一步完成，API 凭证已内置） | http://192.168.1.2:8080 |
-| 频道扫描 | ✅ 已入库 2 频道 / 199 条目（登录后重建媒体树即可出片） | 同上 |
-| Jellyfin 媒体库 | ✅ 已建 "TG频道"（tvshows → /media/tgproxy） | 8097 |
+## 使用
 
-## 架构
+1. 控制台登录 Telegram，添加频道。
+2. 点击 **扫描并更新媒体库**。扫描完成后自动生成媒体树并通知 Jellyfin。
+3. 等待 Jellyfin 扫描，资源会陆续出现。首次处理大量历史视频需要时间。
+4. 删除频道后，可点击 **重建媒体树** 同步移除其旧入口；旧的项目文件会移至备份目录。
 
-```
-TG 频道A ─┐
-TG 频道B ─┼→ tgproxy (Go, :8080) ──→ 媒体树 .strm 文件 ──→ Jellyfin (:8097)
-TG 频道C ─┘    │  gotd MTProto        剧/Season 01/SxxEyy.strm      │
-               │  LRU chunk 缓存                                     │
-               │  顺序预取                                           │
-               └── /stream/<channel>_<msg>  ← .strm 内容指向这里 ←──┘
-                     完整 Range/206 支持（拖进度条）
+扫描、重建和频道修改互斥，错误会保留在日志中。控制台显示的视频数来自索引，不等于 Jellyfin 已完成元数据处理的条目数。
+
+## 拉流设计
+
+```text
+Telegram 频道 → 视频索引 → 剧/Season xx/*.strm → Jellyfin
+      ↑                        │                 │
+      └── 按需分块 ← /stream/<channel>_<message> ←─┘
 ```
 
-## 文档索引
+- 单区间、后缀 Range、HEAD、206/416；不支持 multipart Range。
+- 默认 512 KiB 分块、512 MiB LRU；同块下载合并，重复 seek 复用缓存。
+- 需求下载最多并行 8 个、预取最多 2 个，预取不挤占需求名额。
+- 下载和句柄解析有超时；最后一个等待者取消后中止共享任务。
+- Telegram 请求对齐并限制在 1 MiB 窗口内；支持有限次数的文件 DC 迁移和过期引用刷新。
+- 相同源句柄短期复用，文件身份变化不会混入旧缓存。
+- CDN redirect 尚未实现，返回明确错误；文件大小超过 2 GiB 本身不是拒绝条件。
 
-| 文档 | 内容 |
-|------|------|
-| [docs/PROGRESS.md](docs/PROGRESS.md) | 详细进度时间线：已完成/待办/下一步 |
-| [docs/CODE.md](docs/CODE.md) | 代码结构与各模块说明（2491 行 Go） |
-| [docs/DEPLOY.md](docs/DEPLOY.md) | 服务器部署细节：路径、服务、端口、运维命令 |
-| [docs/USAGE.md](docs/USAGE.md) | 使用指南：登录、频道管理、Jellyfin 配置、手机客户端 |
+## 开发
 
-## 关键设计决策
+Go module 位于 `tgproxy/`，声明 Go 1.25.8。gotd/td 与 tdl core 均固定引用 GitHub fork commit；本地构建不再依赖 `dev/tdl-src/core`。
 
-- **自研拉流层而非用 tdl 的 --serve**：tdl 的 gotd-contrib partio 无缓存（每次 seek 重发 upload.getFile）、Content-Disposition: attachment、无预取。自研实现 LRU chunk 缓存 + single-flight 去重 + 顺序预取 + 完整 Range（单区间/后缀/416），本地测试 seek 90% 只拉 ≤12 chunks、预取延迟 333ms→84ms
-- **媒体树用 .strm 文件**：Jellyfin 原生支持，无需插件；跨频道同名剧归并（normalizeTitle + Season 分组），无集号的（电影）独立成组
-- **凭证全走网页**：API 凭证已内置官方桌面端公共标识（tdl 同款，AppID 2040），用户只需手机号+验证码登录；自备凭证可选填覆盖。session 持久化到 `~/tgproxy/data/config.json`，服务器 systemd unit 无需环境变量
-- **有状态登录会话**：发码→提交验证码→2FA 全程复用同一条 MTProto 连接（phone_code_hash 与连接绑定，无状态会 PHONE_CODE_INVALID）
-- **Jellyfin 12.4 API 适配**：向导流程（FirstUser→User→Configuration→RemoteAccess→Complete）、标准 `Authorization: MediaBrowser` 头、`/Videos/{id}/stream?static=true` 等与 v10 差异详见 docs/DEPLOY.md
+```sh
+cd tgproxy
+go test -race ./...
+go vet ./...
+go build ./...
+GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -o /tmp/tgproxy-linux ./cmd/tgproxy
+```
 
-## 技术栈
+## 文档
 
-- Go 1.25.8（module `tgproxy`）
-- [gotd/td](https://github.com/gotd/td) v0.163.0 — Telegram MTProto 客户端
-- [iyear/tdl/core](https://github.com/iyear/tdl) v0.20.4（本地 replace → `../dev/tdl-src/core`）— dcpool DC 连接池
-- 服务器：Ubuntu 24.04 x86_64 @ 192.168.1.2（用户 lee，免 sudo 的 docker 组）
+- [使用指南](docs/USAGE.md)
+- [部署与配置](docs/DEPLOY.md)
+- [代码结构](docs/CODE.md)
+- [进度与历史](docs/PROGRESS.md)
+- [本次审计与验证](docs/AUDIT-20261108.md)

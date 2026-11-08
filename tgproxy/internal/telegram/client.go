@@ -2,9 +2,10 @@ package telegram
 
 import (
 	"context"
+	"crypto/sha256"
 	"errors"
 	"fmt"
-	"strings"
+	"path/filepath"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -21,18 +22,23 @@ import (
 
 // Client wraps gotd client + DC pool for tgproxy operations.
 type Client struct {
-	appID   int
-	appHash string
+	dataDir  string
+	dialogMu sync.Mutex
+	appID    int
+	appHash  string
 
-	td        *telegram.Client
-	pool      dcpool.Pool
-	peerMgr   *peers.Manager
-	connected atomic.Bool
+	runtimeMu     sync.RWMutex
+	connectMu     sync.Mutex
+	connectCancel context.CancelFunc
+	pool          dcpool.Pool
+	peerMgr       *peers.Manager
+	connected     atomic.Bool
 
 	// Stateful login: one persistent client + pending auth state so that
 	// "send code" and "sign in" reuse the same connection and phone_code_hash
 	// (the code hash from a torn-down connection is rejected by Telegram).
 	loginMu      sync.Mutex
+	loginContext context.Context
 	loginClient  *telegram.Client // live only during a login session
 	loginCancel  context.CancelFunc
 	loginMem     *session.StorageMemory
@@ -46,8 +52,12 @@ type loginPending struct {
 	phoneCodeHash string
 }
 
-func New(appID int, appHash string) *Client {
-	return &Client{appID: appID, appHash: appHash}
+func New(appID int, appHash string, dataDir ...string) *Client {
+	c := &Client{appID: appID, appHash: appHash}
+	if len(dataDir) > 0 {
+		c.dataDir = dataDir[0]
+	}
+	return c
 }
 
 var (
@@ -63,13 +73,23 @@ func (c *Client) SendCode(ctx context.Context, phone string) error {
 
 	// If a login session is already pending for the same phone, keep it
 	// (code already sent; the user should submit it or request a resend).
-	if c.loginClient != nil && c.loginPending != nil && c.loginPending.phone == phone {
+	if c.loginClient != nil && c.loginPending != nil && c.loginPending.phone == phone && c.loginContext.Err() == nil {
+		// long: 用户明确再次点击发送时复用登录连接重发，保持 phone_code_hash 与新验证码一致。
+		sent, err := c.loginClient.Auth().ResendCode(ctx, phone, c.loginPending.phoneCodeHash)
+		if err != nil {
+			return err
+		}
+		if code, ok := sent.(*tg.AuthSentCode); ok {
+			c.loginPending.phoneCodeHash = code.PhoneCodeHash
+		}
 		return nil
 	}
 	c.resetLoginLocked()
+	c.session = nil
 
 	mem := &session.StorageMemory{}
-	runCtx, cancel := context.WithCancel(context.Background())
+	runCtx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+	c.loginContext = runCtx
 	client := telegram.NewClient(c.appID, c.appHash, telegram.Options{
 		SessionStorage: mem,
 	})
@@ -77,23 +97,27 @@ func (c *Client) SendCode(ctx context.Context, phone string) error {
 	c.loginCancel = cancel
 	c.loginMem = mem
 
-	// Keep the connection alive until resetLoginLocked cancels it.
-	go func() { _ = client.Run(runCtx, func(ctx context.Context) error { <-runCtx.Done(); return runCtx.Err() }) }()
-
-	// Wait for the client to connect, then send the code on the live connection.
-	deadline := time.Now().Add(15 * time.Second)
-	var sent tg.AuthSentCodeClass
-	for {
-		s, err := client.Auth().SendCode(ctx, phone, auth.SendCodeOptions{})
-		if err == nil {
-			sent = s
-			break
-		}
-		// "client is not running" until the underlying conn is up
-		if strings.Contains(err.Error(), "client is not running") && time.Now().Before(deadline) {
-			time.Sleep(100 * time.Millisecond)
-			continue
-		}
+	// long: 只有 Run 回调开始后才发送验证码，避免初始化期间并发调用底层客户端。
+	ready := make(chan struct{})
+	finished := make(chan error, 1)
+	go func() {
+		err := client.Run(runCtx, func(ctx context.Context) error { close(ready); <-ctx.Done(); return ctx.Err() })
+		cancel()
+		finished <- err
+	}()
+	waitCtx, waitCancel := context.WithTimeout(ctx, 15*time.Second)
+	defer waitCancel()
+	select {
+	case <-ready:
+	case err := <-finished:
+		c.resetLoginLocked()
+		return fmt.Errorf("登录连接失败: %w", err)
+	case <-waitCtx.Done():
+		c.resetLoginLocked()
+		return waitCtx.Err()
+	}
+	sent, err := client.Auth().SendCode(ctx, phone, auth.SendCodeOptions{})
+	if err != nil {
 		c.resetLoginLocked()
 		return err
 	}
@@ -161,6 +185,7 @@ func (c *Client) SignIn(ctx context.Context, code string) error {
 		return errors.New("验证码错误")
 	}
 	if tgerr.Is(err, "PHONE_CODE_EXPIRED") {
+		c.resetLoginLocked()
 		return errors.New("验证码已过期，请重新发送")
 	}
 	return err
@@ -202,7 +227,11 @@ func (c *Client) resetLoginLocked() {
 }
 
 // Session returns the session bytes from a completed login, if any.
-func (c *Client) Session() []byte { return c.session }
+func (c *Client) Session() []byte {
+	c.loginMu.Lock()
+	defer c.loginMu.Unlock()
+	return append([]byte(nil), c.session...)
+}
 
 // Login performs one-shot login: empty code+password means "send code".
 // The web layer uses SendCode/SignIn/SubmitPassword directly; this wrapper
@@ -223,48 +252,95 @@ func (c *Client) Login(ctx context.Context, phone, code, password string) ([]byt
 			return nil, err
 		}
 	}
-	if c.session == nil {
+	sess := c.Session()
+	if len(sess) == 0 {
 		return nil, ErrCodeNeeded
 	}
-	return c.session, nil
+	return sess, nil
 }
 
 // Connect runs the long-lived client with the given session and builds the DC pool.
 func (c *Client) Connect(ctx context.Context, sessionData []byte, onReady func(dcpool.Pool)) error {
+	c.connectMu.Lock()
+	defer c.connectMu.Unlock()
+	runCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	c.runtimeMu.Lock()
+	c.connectCancel = cancel
+	c.runtimeMu.Unlock()
+	defer func() {
+		c.runtimeMu.Lock()
+		c.connected.Store(false)
+		c.pool = nil
+		c.peerMgr = nil
+		c.connectCancel = nil
+		c.runtimeMu.Unlock()
+	}()
 	mem := session.StorageMemory{}
-	if len(sessionData) > 0 {
-		if err := mem.StoreSession(ctx, sessionData); err != nil {
-			return err
-		}
+	if err := mem.StoreSession(runCtx, sessionData); err != nil {
+		return err
 	}
-	c.td = telegram.NewClient(c.appID, c.appHash, telegram.Options{
-		SessionStorage: &mem,
-	})
-
-	return c.td.Run(ctx, func(ctx context.Context) error {
-		status, err := c.td.Auth().Status(ctx)
+	td := telegram.NewClient(c.appID, c.appHash, telegram.Options{SessionStorage: &mem})
+	return td.Run(runCtx, func(ctx context.Context) error {
+		status, err := td.Auth().Status(ctx)
 		if err != nil {
 			return err
 		}
 		if !status.Authorized {
 			return errors.New("session not authorized; login first")
 		}
-
-		pool := dcpool.NewPool(c.td, 4)
+		pool := &safePool{inner: dcpool.NewPool(td, 4, telegram.MiddlewareFunc(floodMiddleware))}
+		defer pool.Close()
+		peerPath := ""
+		if c.dataDir != "" {
+			fingerprint := sha256.Sum256(sessionData)
+			peerPath = filepath.Join(c.dataDir, fmt.Sprintf("peers-%x.json", fingerprint[:8]))
+		}
+		storage, err := openPeerStorage(peerPath)
+		if err != nil {
+			return fmt.Errorf("读取频道访问缓存失败: %w", err)
+		}
+		mgr := peers.Options{Storage: storage}.Build(pool.Default(ctx))
+		// long: 一次发布整套连接资源，扫描和拉流不会看到只初始化了一半的状态。
+		c.runtimeMu.Lock()
 		c.pool = pool
-		c.peerMgr = peers.Options{Storage: newPeerMemStorage()}.Build(pool.Default(ctx))
+		c.peerMgr = mgr
 		c.connected.Store(true)
+		c.runtimeMu.Unlock()
 		if onReady != nil {
 			onReady(pool)
 		}
-
 		<-ctx.Done()
 		return ctx.Err()
 	})
+}
+
+func (c *Client) Close() {
+	c.runtimeMu.Lock()
+	if c.connectCancel != nil {
+		c.connectCancel()
+	}
+	c.connected.Store(false)
+	c.runtimeMu.Unlock()
+	c.loginMu.Lock()
+	c.resetLoginLocked()
+	c.loginMu.Unlock()
+}
+func (c *Client) runtime() (dcpool.Pool, *peers.Manager, error) {
+	c.runtimeMu.RLock()
+	defer c.runtimeMu.RUnlock()
+	if c.pool == nil || c.peerMgr == nil || !c.connected.Load() {
+		return nil, nil, errors.New("telegram not connected")
+	}
+	return c.pool, c.peerMgr, nil
 }
 
 // Connected reports whether the long-lived client is ready.
 func (c *Client) Connected() bool { return c.connected.Load() }
 
 // Manager returns the peers manager (nil until connected).
-func (c *Client) Manager() *peers.Manager { return c.peerMgr }
+func (c *Client) Manager() *peers.Manager {
+	c.runtimeMu.RLock()
+	defer c.runtimeMu.RUnlock()
+	return c.peerMgr
+}

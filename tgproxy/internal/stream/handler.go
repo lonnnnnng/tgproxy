@@ -2,8 +2,10 @@ package stream
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"strconv"
 	"strings"
@@ -11,79 +13,113 @@ import (
 
 // Source resolves a file key to its chunk source + size + content type.
 type Source interface {
-	Resolve(file string) (ChunkSource, int64, string, error)
+	Resolve(ctx context.Context, file string) (ChunkSource, int64, string, error)
 }
 
 // Handler serves files with full HTTP Range support on top of Cache.
 func (c *Cache) Handler(src Source) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		file := strings.TrimPrefix(r.URL.Path, "/stream/")
+		if r.Method != http.MethodGet && r.Method != http.MethodHead {
+			w.Header().Set("Allow", "GET, HEAD")
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		file := strings.TrimPrefix(strings.TrimPrefix(r.URL.Path, "/stream/"), "/")
+		// long: 下载文件名只作展示，同一消息的不同 URL 后缀必须共享缓存。
+		file, _, _ = strings.Cut(file, "/")
 		if file == "" {
-			http.Error(w, "missing file", http.StatusBadRequest)
+			http.Error(w, "missing file", 400)
 			return
 		}
-
-		cs, size, ctype, err := src.Resolve(file)
+		cs, size, ctype, err := src.Resolve(r.Context(), file)
 		if err != nil {
-			http.Error(w, "not found: "+file, http.StatusNotFound)
+			code := http.StatusBadGateway
+			if errors.Is(err, ErrNotFound) {
+				code = http.StatusNotFound
+			}
+			if errors.Is(err, context.DeadlineExceeded) {
+				code = http.StatusGatewayTimeout
+			}
+			log.Printf("resolve stream %s: %v", file, err)
+			http.Error(w, "media source unavailable", code)
 			return
 		}
-
-		// swap source for this request
-		sub := &fileCache{c: c, src: cs, file: file}
-
-		start, end, partial, ok := parseRange(r.Header.Get("Range"), size)
+		if size < 0 {
+			http.Error(w, "invalid media size", 502)
+			return
+		}
+		cacheKey := file
+		if source, ok := cs.(interface{ CacheKey() string }); ok {
+			cacheKey = file + ":" + source.CacheKey()
+		}
+		sub := &fileCache{c: c, src: cs, file: cacheKey}
+		rangeHeader := r.Header.Get("Range")
+		if r.Method == http.MethodHead {
+			rangeHeader = ""
+		}
+		start, end, partial, ok := parseRange(rangeHeader, size)
 		if !ok {
 			w.Header().Set("Content-Range", fmt.Sprintf("bytes */%d", size))
 			http.Error(w, "range not satisfiable", http.StatusRequestedRangeNotSatisfiable)
 			return
 		}
-
+		buf := make([]byte, 256<<10)
+		off := start
+		var first int
+		// long: 首块失败时尚未提交成功响应，播放器可得到明确的 502/504 并重试。
+		if r.Method != http.MethodHead && off <= end {
+			first, err = sub.ReadAt(r.Context(), off, buf[:min(int64(len(buf)), end-off+1)], size)
+			if err != nil {
+				code := http.StatusBadGateway
+				if errors.Is(err, context.DeadlineExceeded) {
+					code = http.StatusGatewayTimeout
+				}
+				if invalidator, ok := src.(interface{ Invalidate(string) }); ok {
+					invalidator.Invalidate(file)
+				}
+				log.Printf("read stream %s at %d: %v", file, off, err)
+				http.Error(w, "media download failed", code)
+				return
+			}
+		}
 		w.Header().Set("Accept-Ranges", "bytes")
 		w.Header().Set("Content-Type", ctype)
-		// inline: let players/browsers play instead of download
 		w.Header().Set("Content-Disposition", fmt.Sprintf("inline; filename=%q", fileNameOf(file)))
 		w.Header().Set("X-Content-Type-Options", "nosniff")
-
+		w.Header().Set("Content-Length", strconv.FormatInt(end-start+1, 10))
 		if partial {
 			w.Header().Set("Content-Range", fmt.Sprintf("bytes %d-%d/%d", start, end, size))
+			w.WriteHeader(206)
+		} else {
+			w.WriteHeader(200)
 		}
-		w.Header().Set("Content-Length", strconv.FormatInt(end-start+1, 10))
-		w.WriteHeader(map[bool]int{true: http.StatusPartialContent, false: http.StatusOK}[partial])
-
 		if r.Method == http.MethodHead {
 			return
 		}
-
-		buf := make([]byte, 256<<10)
-		off := start
+		if first > 0 {
+			if _, err = w.Write(buf[:first]); err != nil {
+				return
+			}
+			off += int64(first)
+		}
 		for off <= end {
-			n := len(buf)
-			if remain := end - off + 1; int64(n) > remain {
-				n = int(remain)
-			}
-			// don't read past logical EOF
-			if limit := size - off; int64(n) > limit {
-				n = int(limit)
-			}
-			if n <= 0 {
-				break
-			}
-			nr, err := sub.ReadAt(r.Context(), off, buf[:n], size)
+			nr, readErr := sub.ReadAt(r.Context(), off, buf[:min(int64(len(buf)), end-off+1)], size)
 			if nr > 0 {
-				if _, werr := w.Write(buf[:nr]); werr != nil {
+				if _, err = w.Write(buf[:nr]); err != nil {
 					return
 				}
 				off += int64(nr)
 			}
-			if err != nil {
-				if err == io.EOF {
-					return
+			if readErr != nil || nr == 0 {
+				if readErr == nil {
+					readErr = io.ErrUnexpectedEOF
 				}
-				return
-			}
-			if nr == 0 {
-				return
+				if invalidator, ok := src.(interface{ Invalidate(string) }); ok {
+					invalidator.Invalidate(file)
+				}
+				log.Printf("stream %s interrupted at %d/%d: %v", file, off, size, readErr)
+				// long: 已发送响应头后不能改状态，主动中断连接使客户端识别截断响应。
+				panic(http.ErrAbortHandler)
 			}
 		}
 	})
@@ -111,6 +147,9 @@ func fileNameOf(file string) string {
 func parseRange(h string, size int64) (int64, int64, bool, bool) {
 	if h == "" {
 		return 0, size - 1, false, true
+	}
+	if size <= 0 {
+		return 0, 0, false, false
 	}
 	const p = "bytes="
 	if !strings.HasPrefix(h, p) {

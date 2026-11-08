@@ -43,12 +43,12 @@ func TestParseEpisode(t *testing.T) {
 
 func TestCleanTitle(t *testing.T) {
 	cases := map[string]string{
-		"庆余年.S01E02.1080p.mkv":          "庆余年",
-		"Show.Name.S02E03.720p.x265.mp4":   "Show Name",
+		"庆余年.S01E02.1080p.mkv":           "庆余年",
+		"Show.Name.S02E03.720p.x265.mp4": "Show Name",
 		"琅琊榜 第12集 国语.mkv":                "琅琊榜",
-		"Bleach EP08.mp4":                   "Bleach",
-		"剧名【第05集】.mkv":                    "剧名",
-		"Inception (2010).mkv":              "Inception",
+		"Bleach EP08.mp4":                "Bleach",
+		"剧名【第05集】.mkv":                   "剧名",
+		"Inception (2010).mkv":           "Inception",
 	}
 	for in, want := range cases {
 		if got := CleanTitle(in); got != want {

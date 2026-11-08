@@ -34,6 +34,8 @@ func newFakeSource(size, chunk int64, latency time.Duration) *fakeSource {
 }
 
 func (f *fakeSource) fill(off int64) []byte {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	if b, ok := f.data[off]; ok {
 		return b
 	}
@@ -78,7 +80,7 @@ type fakeResolver struct {
 	ctype string
 }
 
-func (r *fakeResolver) Resolve(file string) (ChunkSource, int64, string, error) {
+func (r *fakeResolver) Resolve(_ context.Context, file string) (ChunkSource, int64, string, error) {
 	if file != "test.mp4" {
 		return nil, 0, "", ErrNotFound
 	}
