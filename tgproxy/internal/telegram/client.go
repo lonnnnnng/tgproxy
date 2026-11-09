@@ -289,7 +289,8 @@ func (c *Client) Connect(ctx context.Context, sessionData []byte, onReady func(d
 		if !status.Authorized {
 			return errors.New("session not authorized; login first")
 		}
-		pool := &safePool{inner: dcpool.NewPool(td, 4, telegram.MiddlewareFunc(floodMiddleware))}
+		// long: 配合最多 7 个并发预取保留需求下载容量，高延迟时不再只靠两块轮流等待。
+		pool := &safePool{inner: dcpool.NewPool(td, 8, telegram.MiddlewareFunc(floodMiddleware))}
 		defer pool.Close()
 		peerPath := ""
 		if c.dataDir != "" {

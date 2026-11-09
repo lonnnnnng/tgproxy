@@ -14,6 +14,7 @@ Go module：`tgproxy/`。gotd/td v0.163.0 与 tdl core 均通过 `go.mod` 固定
 | `internal/telegram/retry.go` | 有界、可取消的 FLOOD_WAIT 等待重试 |
 | `internal/telegram/chunk.go` | 文件分块对齐、尾块、DC 迁移、引用过期恢复与文件身份检查 |
 | `internal/stream/cache.go` | 有界 LRU/singleflight、需求与预取分离、取消、超时、失败重试 |
+| `internal/stream/prefetch.go` | 按播放请求管理预取窗口、共享引用与取消、有限 Range 边界及小缓存限制 |
 | `internal/stream/source.go` | 有界 TTL 句柄缓存，解析合并与独立等待者取消 |
 | `internal/stream/handler.go` | HTTP 单 Range/HEAD、首块失败 502/504、中途断流的可识别终止 |
 | `internal/media/tree.go` | 预编译的集号/剧名规则、跨频道归类、来源保留和确定性排序 |
@@ -42,6 +43,8 @@ go build ./...
 TGPROXY_LIBRARY_FIXTURE=/path/to/private-library-copy.json go test ./internal/media -run TestLibraryFixture -count=1 -v
 ```
 
-TDL 连接池修复分支：<https://github.com/lonnnnnng/tdl/tree/codex/dcpool-lifecycle-fix>。tgproxy 固定使用该分支提交 `09ffd071bb095c73d4d2a83233847806513e0fea`，并使用 gotd fork 提交 `8c39a2b01c8213481f59078867d22413ed05bc12`。版本由 `go.mod` 固定，不跟随可移动分支。
+TDL 连接池修复分支：<https://github.com/lonnnnnng/tdl/tree/codex/dcpool-lifecycle-fix>。tgproxy 固定使用该分支提交 `09ffd071bb095c73d4d2a83233847806513e0fea`。gotd 使用 <https://github.com/lonnnnnng/td/tree/codex/pool-canceled-connect> 的提交 `94dfac737b1cf2bf487dda91d4e79dbfbd33f9dd`，修复建连期间请求取消后就绪连接未归还池中的问题。版本由 `go.mod` 固定，不跟随可移动分支。
+
+下载调度使用最多 7 个全局预取名额和 8 个需求读取名额，每个 Telegram DC 最多 8 条连接。窗口在首块等待时启动，随本请求推进；同一块仍被其他请求预取或读取时，不会因一个请求结束而取消。预取失败不会在同一窗口内自动循环重试，正式读取可以重新发起请求。`BenchmarkColdRange` 使用固定每块延迟与每轮全新缓存，便于对照调度改动，结果不代表真实网络吞吐。
 
 测试覆盖分段字节一致性、尾块、seek、预取、取消交错、失败重试、DC 迁移、过期引用、分页、存储失败、同名来源、目录同步、路径冲突、扫描互斥与同源保护。真实网络、账号登录和客户端解码仍需单独验收。

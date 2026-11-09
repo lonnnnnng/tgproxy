@@ -52,4 +52,4 @@ require (
 
 replace github.com/iyear/tdl/core => github.com/lonnnnnng/tdl/core v0.0.0-20261108145415-09ffd071bb09
 
-replace github.com/gotd/td => github.com/lonnnnnng/td v0.0.0-20261107182807-8c39a2b01c82
+replace github.com/gotd/td => github.com/lonnnnnng/td v0.0.0-20261109164146-94dfac737b1c

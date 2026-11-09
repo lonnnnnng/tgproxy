@@ -52,7 +52,8 @@ func (c *Cache) Handler(src Source) http.Handler {
 		if source, ok := cs.(interface{ CacheKey() string }); ok {
 			cacheKey = file + ":" + source.CacheKey()
 		}
-		sub := &fileCache{c: c, src: cs, file: cacheKey}
+		sub := &fileCache{c: c, src: cs, file: cacheKey, ahead: c.newReadAhead(cs, cacheKey)}
+		defer sub.ahead.Close()
 		rangeHeader := r.Header.Get("Range")
 		if r.Method == http.MethodHead {
 			rangeHeader = ""
@@ -63,12 +64,15 @@ func (c *Cache) Handler(src Source) http.Handler {
 			http.Error(w, "range not satisfiable", http.StatusRequestedRangeNotSatisfiable)
 			return
 		}
+		// long: 有限 Range 只预取本次请求覆盖的块，探测文件头和尾部时不浪费后续下载带宽。
+		sub.ahead.limit = end + 1
 		buf := make([]byte, 256<<10)
 		off := start
 		var first int
 		// long: 首块失败时尚未提交成功响应，播放器可得到明确的 502/504 并重试。
 		if r.Method != http.MethodHead && off <= end {
-			first, err = sub.ReadAt(r.Context(), off, buf[:min(int64(len(buf)), end-off+1)], size)
+			// long: 随机拖动可能落在分块末尾，首包只等当前块，避免额外等待下一个 Telegram 请求。
+			first, err = sub.ReadAt(r.Context(), off, buf[:min(int64(len(buf)), end-off+1, c.chunk-off%c.chunk)], size)
 			if err != nil {
 				code := http.StatusBadGateway
 				if errors.Is(err, context.DeadlineExceeded) {
@@ -101,6 +105,10 @@ func (c *Cache) Handler(src Source) http.Handler {
 				return
 			}
 			off += int64(first)
+			// long: 分块末尾的首包可能不足 HTTP 缓冲大小，立即发送才能真正缩短播放器的等待。
+			if err := http.NewResponseController(w).Flush(); err != nil && !errors.Is(err, http.ErrNotSupported) {
+				return
+			}
 		}
 		for off <= end {
 			nr, readErr := sub.ReadAt(r.Context(), off, buf[:min(int64(len(buf)), end-off+1)], size)
@@ -126,13 +134,14 @@ func (c *Cache) Handler(src Source) http.Handler {
 }
 
 type fileCache struct {
-	c    *Cache
-	src  ChunkSource
-	file string
+	c     *Cache
+	src   ChunkSource
+	file  string
+	ahead *readAhead
 }
 
 func (f *fileCache) ReadAt(ctx context.Context, off int64, dst []byte, total int64) (int, error) {
-	return f.c.readAtWith(ctx, f.src, f.file, off, dst, total)
+	return f.c.readAtWith(ctx, f.src, f.file, off, dst, total, f.ahead)
 }
 
 func fileNameOf(file string) string {

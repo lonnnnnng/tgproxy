@@ -10,6 +10,9 @@ import (
 	"time"
 )
 
+// long: 每个 Telegram DC 使用 8 条下载连接，预取最多占 7 条，给新的播放/拖动读取留出容量。
+const maxPrefetchConcurrent = 7
+
 type ChunkSource interface {
 	Chunk(context.Context, int64, []byte) (int64, error)
 }
@@ -28,7 +31,7 @@ type entry struct {
 	err         error
 	cancel      context.CancelFunc
 	waiters     int
-	speculative bool
+	prefetchers int
 	done        bool
 	abandoned   bool
 }
@@ -61,10 +64,12 @@ func NewCache(src ChunkSource, chunkSize, maxBytes int64, prefetch int) *Cache {
 	if prefetch > 16 {
 		prefetch = 16
 	}
+	// long: 小缓存至少留下当前播放块的位置，避免预取窗口自己反复挤掉待播放的数据。
+	prefetch = min(prefetch, int(maxBytes/chunkSize-1))
 	ctx, cancel := context.WithCancel(context.Background())
 	return &Cache{src: src, chunk: chunkSize, maxBytes: maxBytes, prefetchN: prefetch,
 		items: map[chunkKey]*list.Element{}, inflight: map[chunkKey]*entry{}, order: list.New(),
-		demandSlots: make(chan struct{}, 8), prefetchSlots: make(chan struct{}, 2), ctx: ctx, cancel: cancel, fetchTimeout: 30 * time.Second}
+		demandSlots: make(chan struct{}, 8), prefetchSlots: make(chan struct{}, min(prefetch, maxPrefetchConcurrent)), ctx: ctx, cancel: cancel, fetchTimeout: 30 * time.Second}
 }
 func (c *Cache) Close() { c.cancel() }
 
@@ -87,13 +92,13 @@ func (c *Cache) lookupLocked(key chunkKey) *entry {
 	return c.inflight[key]
 }
 
-func (c *Cache) startLocked(src ChunkSource, key chunkKey, expected int64, speculative bool, slots chan struct{}) *entry {
+func (c *Cache) startLocked(src ChunkSource, key chunkKey, expected int64, slots chan struct{}) *entry {
 	ctx, cancel := context.WithTimeout(c.ctx, c.fetchTimeout)
-	e := &entry{key: key, data: make([]byte, c.chunk), ready: make(chan struct{}), cancel: cancel, speculative: speculative}
+	e := &entry{key: key, data: make([]byte, c.chunk), ready: make(chan struct{}), cancel: cancel}
 	c.inflight[key] = e
 	c.Misses.Add(1)
 	go func() {
-		defer func() { cancel(); <-slots }()
+		defer cancel()
 		n, err := src.Chunk(ctx, key.Offset, e.data)
 		// long: 只有完整逻辑块能进入缓存，网络中断或提前 EOF 不能污染后续重试。
 		if n != expected && (err == nil || errors.Is(err, io.EOF)) {
@@ -112,6 +117,8 @@ func (c *Cache) startLocked(src ChunkSource, key chunkKey, expected int64, specu
 			c.size += int64(len(e.data))
 			c.evictLocked()
 		}
+		// long: 先归还下载名额再唤醒读取者，滑动窗口可立即补上后续块。
+		<-slots
 		close(e.ready)
 		c.mu.Unlock()
 	}()
@@ -122,14 +129,7 @@ func (c *Cache) wait(ctx context.Context, e *entry) (*entry, error) {
 	defer func() {
 		c.mu.Lock()
 		e.waiters--
-		// long: 同块仍有其他播放器等待时保留共享下载，最后一个等待者离开才取消。
-		if e.waiters == 0 && !e.speculative && !e.done {
-			e.abandoned = true
-			e.cancel()
-			if c.inflight[e.key] == e {
-				delete(c.inflight, e.key)
-			}
-		}
+		c.cancelUnusedLocked(e)
 		c.mu.Unlock()
 	}()
 	select {
@@ -142,13 +142,25 @@ func (c *Cache) wait(ctx context.Context, e *entry) (*entry, error) {
 	}
 }
 
-func (c *Cache) getWith(ctx context.Context, src ChunkSource, key chunkKey, expected int64) (*entry, error) {
+func (c *Cache) cancelUnusedLocked(e *entry) {
+	// long: 同一分块可被多个播放窗口和正式读取共享，只有所有消费者离开后才中止。
+	if e.waiters == 0 && e.prefetchers == 0 && !e.done {
+		e.abandoned = true
+		e.cancel()
+		if c.inflight[e.key] == e {
+			delete(c.inflight, e.key)
+		}
+	}
+}
+
+func (c *Cache) getWith(ctx context.Context, src ChunkSource, key chunkKey, expected, total int64, ahead *readAhead) (*entry, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
 	c.mu.Lock()
 	if e := c.lookupLocked(key); e != nil {
 		e.waiters++
+		ahead.advanceLocked(ctx, key.Offset, total)
 		c.mu.Unlock()
 		return c.wait(ctx, e)
 	}
@@ -162,21 +174,30 @@ func (c *Cache) getWith(ctx context.Context, src ChunkSource, key chunkKey, expe
 		return nil, c.ctx.Err()
 	}
 	c.mu.Lock()
+	if err := ctx.Err(); err != nil {
+		<-c.demandSlots
+		c.mu.Unlock()
+		return nil, err
+	}
 	e := c.lookupLocked(key)
 	if e != nil {
 		<-c.demandSlots
 	} else {
-		e = c.startLocked(src, key, expected, false, c.demandSlots)
+		e = c.startLocked(src, key, expected, c.demandSlots)
 	}
 	e.waiters++
+	// long: 首块尚在 Telegram 下载时就并发拉取后续分块，抵消较长网络往返造成的播放停顿。
+	ahead.advanceLocked(ctx, key.Offset, total)
 	c.mu.Unlock()
 	return c.wait(ctx, e)
 }
 
 func (c *Cache) ReadAt(ctx context.Context, file string, off int64, dst []byte, total int64) (int, error) {
-	return c.readAtWith(ctx, c.src, file, off, dst, total)
+	ahead := c.newReadAhead(c.src, file)
+	defer ahead.Close()
+	return c.readAtWith(ctx, c.src, file, off, dst, total, ahead)
 }
-func (c *Cache) readAtWith(ctx context.Context, src ChunkSource, file string, off int64, dst []byte, total int64) (int, error) {
+func (c *Cache) readAtWith(ctx context.Context, src ChunkSource, file string, off int64, dst []byte, total int64, ahead *readAhead) (int, error) {
 	if off < 0 || total < 0 {
 		return 0, errors.New("invalid file offset or size")
 	}
@@ -189,7 +210,7 @@ func (c *Cache) readAtWith(ctx context.Context, src ChunkSource, file string, of
 	copied := 0
 	for copied < len(dst) && off < total {
 		align := off / c.chunk * c.chunk
-		e, err := c.getWith(ctx, src, chunkKey{file, align}, min(c.chunk, total-align))
+		e, err := c.getWith(ctx, src, chunkKey{file, align}, min(c.chunk, total-align), total, ahead)
 		if err != nil {
 			return copied, err
 		}
@@ -197,39 +218,14 @@ func (c *Cache) readAtWith(ctx context.Context, src ChunkSource, file string, of
 		copied += n
 		off += int64(n)
 		c.BytesRead.Add(int64(n))
-		// long: 优先满足正在播放/拖动的块，预取只使用独立的两个低优先级名额。
-		c.schedulePrefetch(src, file, align, total)
+		c.mu.Lock()
+		ahead.advanceLocked(ctx, align, total)
+		c.mu.Unlock()
 	}
 	if copied < len(dst) {
 		return copied, io.EOF
 	}
 	return copied, nil
-}
-func (c *Cache) schedulePrefetch(src ChunkSource, file string, off, total int64) {
-	for i := 1; i <= c.prefetchN; i++ {
-		next := off + int64(i)*c.chunk
-		if next >= total {
-			return
-		}
-		select {
-		case <-c.ctx.Done():
-			return
-		default:
-		}
-		select {
-		case c.prefetchSlots <- struct{}{}:
-		default:
-			return
-		}
-		key := chunkKey{file, next}
-		c.mu.Lock()
-		if c.lookupLocked(key) != nil {
-			<-c.prefetchSlots
-		} else {
-			c.startLocked(src, key, min(c.chunk, total-next), true, c.prefetchSlots)
-		}
-		c.mu.Unlock()
-	}
 }
 func (c *Cache) Stat() (int64, int64, int64) {
 	c.mu.Lock()

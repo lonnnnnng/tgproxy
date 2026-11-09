@@ -284,21 +284,29 @@ func TestPrefetchReducesLatency(t *testing.T) {
 	// without prefetch
 	src1 := newFakeSource(size, chunk, lat)
 	c1 := newTestCache(src1, chunk, 32<<20, 0)
+	ahead1 := c1.newReadAhead(src1, "f.mp4")
 	start := time.Now()
 	buf := make([]byte, chunk)
 	for off := int64(0); off < 4<<20; off += chunk {
-		c1.ReadAt(context.Background(), "f.mp4", off, buf, size)
+		if _, err := c1.readAtWith(context.Background(), src1, "f.mp4", off, buf, size, ahead1); err != nil {
+			t.Fatal(err)
+		}
 	}
 	noPre := time.Since(start)
+	ahead1.Close()
 
 	// with prefetch
 	src2 := newFakeSource(size, chunk, lat)
 	c2 := newTestCache(src2, chunk, 32<<20, 4)
+	ahead2 := c2.newReadAhead(src2, "f.mp4")
 	start = time.Now()
 	for off := int64(0); off < 4<<20; off += chunk {
-		c2.ReadAt(context.Background(), "f.mp4", off, buf, size)
+		if _, err := c2.readAtWith(context.Background(), src2, "f.mp4", off, buf, size, ahead2); err != nil {
+			t.Fatal(err)
+		}
 	}
 	withPre := time.Since(start)
+	ahead2.Close()
 
 	t.Logf("no prefetch: %v, with prefetch: %v", noPre, withPre)
 	if withPre >= noPre {
