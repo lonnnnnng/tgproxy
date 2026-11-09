@@ -1,63 +1,115 @@
 {
   "schemaVersion": 2,
-  "generatedAt": "2026-11-09T00:30:00+08:00",
-  "title": "Design System: tgproxy 控制台",
+  "generatedAt": "2026-11-09T21:08:31.798385+08:00",
+  "title": "Design System: tgproxy 媒体工作台",
   "extensions": {
     "colorMeta": {
-      "pine": { "role": "primary", "displayName": "松石绿", "canonical": "#146c54", "tonalRamp": ["#062b22", "#084936", "#0c5642", "#146c54", "#3d9275", "#78cba8", "#b9e4cf", "#e7f5ed"] },
-      "signal": { "role": "secondary", "displayName": "信号橙", "canonical": "#c95c2a", "tonalRamp": ["#3c1609", "#6e2b13", "#963e1c", "#c95c2a", "#e68150", "#f3a170", "#fac8a9", "#fde9dc"] },
-      "canvas": { "role": "neutral", "displayName": "纸白", "canonical": "#f1f5f2", "tonalRamp": ["#1c2923", "#34443b", "#53645b", "#8b9b91", "#b5c2ba", "#d4dfd8", "#e5eee8", "#f1f5f2"] },
-      "header": { "role": "primary", "displayName": "顶栏深松绿", "canonical": "#174d3e", "tonalRamp": ["#061b15", "#0b3026", "#174d3e", "#28614f", "#4e8776", "#7aa99a", "#b5cec4", "#e6f0ec"] },
-      "quiet": { "role": "neutral", "displayName": "辅助文字", "canonical": "#5b6a61", "tonalRamp": ["#1c2923", "#36443c", "#5b6a61", "#7d8d83", "#a1afa6", "#c0cbc4", "#dbe4de", "#f1f5f2"] }
-    },
-    "typographyMeta": {
-      "display": { "displayName": "页面标题", "purpose": "管理台页面标题，保持稳定的桌面尺度。" },
-      "body": { "displayName": "工作文字", "purpose": "中文说明、频道内容和表格信息。" },
-      "label": { "displayName": "状态标签", "purpose": "阶段、计数和字段标签。" }
+      "accent": {
+        "role": "primary",
+        "displayName": "钴蓝动作色",
+        "canonical": "#3859d6"
+      },
+      "canvas": {
+        "role": "neutral",
+        "displayName": "冷灰背景",
+        "canonical": "#f6f7fa"
+      }
     },
     "shadows": [
-      { "name": "toast-low", "value": "0 4px 14px rgb(20 38 29 / 14%)", "purpose": "短暂反馈条与页面分离。" }
+      {
+        "name": "overlay",
+        "value": "0 16px 48px rgb(24 33 57 / 16%)",
+        "purpose": "对话框与提示条"
+      }
     ],
     "motion": [
-      { "name": "state-transition", "value": "150ms ease", "purpose": "按钮和主题状态变化。" }
+      {
+        "name": "control-state",
+        "value": "160ms ease",
+        "purpose": "控件状态变化，减少动态效果时禁用"
+      }
     ],
     "breakpoints": [
-      { "name": "stack", "value": "880px" },
-      { "name": "phone", "value": "620px" }
+      {
+        "name": "compact-sidebar",
+        "value": "1150px"
+      },
+      {
+        "name": "stack-overview",
+        "value": "950px"
+      },
+      {
+        "name": "mobile",
+        "value": "700px"
+      }
     ]
   },
   "components": [
     {
-      "name": "Primary Button",
+      "name": "主要按钮",
       "kind": "button",
-      "refersTo": "button-primary",
-      "description": "主要扫描、保存和添加动作。",
-      "html": "<button class=\"ds-btn-primary\">扫描并更新</button>",
-      "css": ".ds-btn-primary { background: #146c54; color: #fff; border: 1px solid #146c54; border-radius: 5px; padding: 8px 14px; min-height: 40px; font: 600 14px/1.5 -apple-system, BlinkMacSystemFont, 'PingFang SC', sans-serif; transition: background-color 150ms ease, border-color 150ms ease; } .ds-btn-primary:hover { background: #0c5642; border-color: #0c5642; } .ds-btn-primary:focus-visible { outline: 3px solid #bd5326; outline-offset: 2px; }"
+      "description": "主要按钮，从当前实现提取。",
+      "html": "<button class=\"ds-primary\">扫描并更新</button>",
+      "css": ".ds-primary { background:var(--accent,#3859d6); color:var(--on-accent,#fff); border:0; border-radius:8px; min-height:40px; padding:9px 15px; font:600 13px system-ui; } .ds-primary:hover { background:var(--accent-hover,#2946b7); } .ds-primary:focus-visible { outline:3px solid var(--accent,#3859d6); outline-offset:3px; }",
+      "refersTo": "button-primary"
     },
     {
-      "name": "Input Field",
+      "name": "次要按钮",
+      "kind": "button",
+      "description": "次要按钮，从当前实现提取。",
+      "html": "<button class=\"ds-secondary\">重建媒体树</button>",
+      "css": ".ds-secondary { background:var(--surface,#fff); color:var(--text,#222a3b); border:1px solid var(--strong-line,#c4ccdc); border-radius:8px; min-height:40px; padding:9px 15px; font:600 13px system-ui; } .ds-secondary:hover { border-color:var(--accent,#3859d6); } .ds-secondary:focus-visible { outline:3px solid var(--accent,#3859d6); outline-offset:3px; }",
+      "refersTo": "button-secondary"
+    },
+    {
+      "name": "输入框",
       "kind": "input",
-      "refersTo": "input",
-      "description": "频道引用、搜索和认证输入。",
-      "html": "<input class=\"ds-input\" placeholder=\"@频道名\" />",
-      "css": ".ds-input { width: 100%; min-height: 40px; padding: 8px 11px; border: 1px solid #aebeb4; border-radius: 4px; background: #fff; color: #1c2923; font: 400 14px/1.5 -apple-system, BlinkMacSystemFont, 'PingFang SC', sans-serif; } .ds-input:focus-visible { outline: 3px solid #bd5326; outline-offset: 2px; }"
+      "description": "输入框，从当前实现提取。",
+      "html": "<input class=\"ds-input\" aria-label=\"频道\" placeholder=\"频道链接或用户名\">",
+      "css": ".ds-input { background:var(--surface,#fff); color:var(--text,#222a3b); border:1px solid var(--strong-line,#c4ccdc); border-radius:8px; min-height:40px; padding:9px 12px; font:14px system-ui; } .ds-input:focus-visible { outline:3px solid var(--accent,#3859d6); outline-offset:3px; }",
+      "refersTo": "input"
     },
     {
-      "name": "Workflow Stage",
-      "kind": "custom",
-      "refersTo": "workflow-stage",
-      "description": "Telegram、媒体树和 Jellyfin 的独立阶段。",
-      "html": "<div class=\"ds-stage\"><span class=\"ds-stage-mark\"></span><strong>Telegram 扫描</strong><span>扫描中</span></div>",
-      "css": ".ds-stage { display: grid; grid-template-columns: 12px 1fr auto; gap: 10px; align-items: center; min-height: 70px; padding: 12px 16px; border-top: 1px solid #ccd8d0; border-bottom: 1px solid #ccd8d0; color: #1c2923; font: 400 14px/1.5 -apple-system, BlinkMacSystemFont, 'PingFang SC', sans-serif; } .ds-stage-mark { width: 9px; height: 9px; border: 2px solid #c95c2a; border-radius: 50%; background: #c95c2a; }"
+      "name": "选中导航",
+      "kind": "nav",
+      "description": "选中导航，从当前实现提取。",
+      "html": "<a href=\"#overview\" class=\"ds-nav\" aria-current=\"page\">同步概览</a>",
+      "css": ".ds-nav { display:block; background:var(--accent-soft,#e8edff); color:var(--accent,#3859d6); border-radius:8px; padding:10px 14px; font:600 14px system-ui; text-decoration:none; } .ds-nav:hover { opacity:.85; } .ds-nav:focus-visible { outline:3px solid var(--accent,#3859d6); outline-offset:3px; }"
+    },
+    {
+      "name": "结果状态",
+      "kind": "chip",
+      "description": "结果状态，从当前实现提取。",
+      "html": "<span class=\"ds-status\">已完成</span>",
+      "css": ".ds-status { display:inline-flex; background:var(--green-soft,#eaf6ef); color:var(--green,#267357); border-radius:5px; padding:4px 9px; font:600 12px system-ui; }"
+    },
+    {
+      "name": "工作区面板",
+      "kind": "card",
+      "description": "工作区面板，从当前实现提取。",
+      "html": "<section class=\"ds-panel\"><h2>媒体同步</h2><p>本次扫描已完成</p></section>",
+      "css": ".ds-panel { background:var(--surface,#fff); color:var(--text,#222a3b); border:1px solid var(--line,#e5e8f0); border-radius:12px; padding:24px; font:14px system-ui; } .ds-panel h2 { font-size:16px; margin:0 0 16px; }"
     }
   ],
   "narrative": {
-    "northStar": "频道节目表",
-    "overview": "这是一个给自建服务维护者使用的工作界面。视觉借用电视节目表的顺序感和广播色标，但只借用类型、密度、颜色和频道行的强调方式；布局、表单和操作仍遵循标准 Web 运维工具的预期。界面以纸白或深石墨作为工作底色，松石绿标记主要动作和成功状态，信号橙标记进行中的任务，红色只表示失败。扫描、媒体树和 Jellyfin 是三个独立阶段，任何阶段都不伪造未知的远端进度。",
-    "keyCharacteristics": ["频道顺序是首屏的主要阅读轴。", "状态颜色只承担连接、进行中、成功、警告和失败的语义。", "线性分隔和轻微色调层级承担结构，不使用装饰性阴影。", "浅色与深色主题共享同一套信息层级。"],
-    "rules": [{ "name": "The Signal-Only Rule", "body": "颜色只在它传达状态或主要动作时出现；空白区域不使用彩色装饰。", "section": "colors" }],
-    "dos": ["Do 把频道完成数和当前频道已发现视频数分开表达。", "Do 把媒体树生成与 Jellyfin 刷新请求作为两个阶段显示。", "Do 为空频道、扫描失败、等待扫描和远端通知失败提供明确恢复路径。", "Do 保持浅色和深色主题的语义色一致。"],
-    "donts": ["Don't 编造 Jellyfin 的扫描百分比、库内资源数或剩余时间。", "Don't 用单一大卡片、渐变背景或装饰性图形替代频道行和任务状态。", "Don't 用颜色代替状态文字；所有状态都要能被文字和结构理解。"]
+    "northStar": "清晰的媒体目录",
+    "overview": "用户已授权重新设计整套控制台，并委托决定视觉和功能。新版以冷灰白、钴蓝和明确分区承载维护任务，替换旧版绿色节目表。使用标准侧栏、表格、输入框、状态标签；品牌表达来自频道首字标识和依次变化的同步路径。",
+    "keyCharacteristics": [
+      "概览、频道、日志、连接各有明确职责。",
+      "浅色和深色共享布局与语义状态。",
+      "主要内容使用柔和边界，浮层才使用阴影。",
+      "手机表格重排为分行列表，保留完整标题与可点操作。"
+    ],
+    "rules": [],
+    "dos": [
+      "Do 区分已添加频道、视频索引、媒体入口及远端刷新请求。",
+      "Do 给空状态、断线和失败提供明确的下一步。",
+      "Do 保持双主题、键盘导航与减少动态效果行为。"
+    ],
+    "donts": [
+      "Don't 把提交 Jellyfin 请求说成入库完成。",
+      "Don't 将旧节目表长页的重复频道列表带回新概览。",
+      "Don't 在生产 UI 中展示设计流程、生成工具或虚构数据。"
+    ]
   }
 }
