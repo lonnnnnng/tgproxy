@@ -1,0 +1,14 @@
+<resources>
+    <style name="Theme.TGProxy" parent="Theme.Material3.DayNight.NoActionBar">
+        <item name="colorPrimary">#A5B7FF</item>
+        <item name="colorOnPrimary">#142346</item>
+        <item name="colorPrimaryContainer">#2C385E</item>
+        <item name="colorOnPrimaryContainer">#DFE5FF</item>
+        <item name="colorSurface">#131722</item>
+        <item name="colorOnSurface">#E9EDF7</item>
+        <item name="colorOnSurfaceVariant">#A5B0C6</item>
+        <item name="android:windowLightStatusBar">false</item>
+        <item name="android:fontFamily">sans</item>
+        <item name="android:windowActionModeOverlay">true</item>
+    </style>
+</resources>

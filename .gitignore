@@ -19,3 +19,15 @@ library.json
 .impeccable/questions/
 .impeccable/work/
 .impeccable/build/
+
+# Android 本机构建产物与私有 SDK 配置
+android/.gradle/
+android/.tools/
+android/**/build/
+android/local.properties
+android/app/libs/*.aar
+android/app/libs/*-sources.jar
+*.apk
+
+# Android 发布签名，不进入 Git
+android/.signing/

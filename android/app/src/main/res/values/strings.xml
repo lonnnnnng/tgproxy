@@ -1,0 +1,3 @@
+<resources>
+    <string name="playback_error">播放失败（%1$s），请返回后重试</string>
+</resources>

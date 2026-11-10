@@ -1,0 +1,82 @@
+package dev.tgproxy.mobile
+
+import android.database.sqlite.SQLiteDatabase
+import androidx.test.ext.junit.runners.AndroidJUnit4
+import androidx.test.platform.app.InstrumentationRegistry
+import org.json.JSONArray
+import org.json.JSONObject
+import org.junit.Assert.*
+import org.junit.Test
+import org.junit.runner.RunWith
+import java.util.UUID
+
+@RunWith(AndroidJUnit4::class)
+class IndexDatabaseTest {
+    private val context get() = InstrumentationRegistry.getInstrumentation().targetContext
+    private fun video(channel: Long, id: Long, name: String = "视频_01%\\.mp4") = JSONObject().put("key", "${channel}_$id")
+        .put("channel_id", channel).put("message_id", id).put("name", name).put("date", id).put("size", 100)
+    private fun channel(id: Long) = JSONObject().put("channel_id", id).put("title", "频道$id").put("ref", id.toString())
+    private fun page(next: Long, newest: Long, done: Boolean, vararg items: JSONObject) = JSONObject()
+        .put("next_id", next).put("newest_id", newest).put("done", done).put("items", JSONArray(items.toList()))
+
+    @Test fun oldSchemaMigratesWithoutLosingSessionIndependentData() {
+        val name = "migration-${UUID.randomUUID()}.db"
+        val path = context.getDatabasePath(name)
+        path.parentFile!!.mkdirs()
+        SQLiteDatabase.openOrCreateDatabase(path, null).use { db ->
+            db.execSQL("CREATE TABLE videos (key TEXT PRIMARY KEY,name TEXT NOT NULL,payload TEXT NOT NULL,date INTEGER NOT NULL)")
+            db.execSQL("CREATE TABLE channel (id INTEGER PRIMARY KEY,payload TEXT NOT NULL)")
+            db.execSQL("CREATE TABLE playback (key TEXT PRIMARY KEY,position INTEGER NOT NULL)")
+            db.execSQL("INSERT INTO videos VALUES (?,?,?,?)", arrayOf<Any>("1_20", "旧视频", video(1,20).toString(),20))
+            db.execSQL("INSERT INTO channel VALUES (1,?)", arrayOf(channel(1).toString()))
+            db.execSQL("INSERT INTO playback VALUES ('1_20',12000)")
+            db.version = 1
+        }
+        try { MediaDatabase(context, name).use { db ->
+            assertEquals(1, db.channels().length()); assertEquals(1L, db.count()); assertEquals(12000L, db.position("1_20"))
+            assertEquals(20L, db.channel(1)!!.getLong("history_offset")); assertEquals(20L, db.channel(1)!!.getLong("latest_id"))
+            assertEquals(1L, db.video("1_20")!!.getLong("channel_id"))
+        } } finally { context.deleteDatabase(name) }
+    }
+
+    @Test fun pagesAreIsolatedAtomicAndResumeBothDirections() {
+        val name = "index-${UUID.randomUUID()}.db"
+        try { MediaDatabase(context, name).use { db ->
+            db.addChannel(channel(1)); db.addChannel(channel(2))
+            db.applyPage(1, page(70,100,false,video(1,90)), false)
+            db.applyPage(2, page(70,100,false,video(2,90,"另一个频道.mp4")), false)
+            db.savePosition("1_90", 12000)
+            assertEquals(2L, db.count()); assertEquals(2, db.videos().length()); assertEquals(1, db.videos(channelID=2).length())
+            assertEquals(1, db.videos("_01%\\").length()); assertEquals(0, db.videos("' OR 1=1 --").length())
+            db.applyPage(1, page(150,200,false,video(1,180)), true)
+            assertEquals(100L, db.channel(1)!!.getLong("latest_id"))
+            assertEquals(150L, db.channel(1)!!.getLong("refresh_offset"))
+            // long: 失败页包含另一个频道的数据，整页必须回滚，不能只回滚游标或部分视频。
+            try { db.applyPage(1,page(110,140,false,video(1,130),video(2,120)),true); fail("invalid page accepted") } catch (_: IllegalArgumentException) { }
+            assertNull(db.video("1_130")); assertEquals(150L, db.channel(1)!!.getLong("refresh_offset"))
+        }
+        MediaDatabase(context,name).use { db ->
+            assertEquals(150L,db.channel(1)!!.getLong("refresh_offset"))
+            db.applyPage(1,page(0,0,true),true)
+            assertEquals(200L,db.channel(1)!!.getLong("latest_id")); assertFalse(db.channel(1)!!.has("refresh_offset"))
+            assertEquals(70L,db.channel(1)!!.getLong("history_offset"))
+            assertEquals(12000L,db.position("1_90")); assertEquals(1,db.videos(recent=true).length())
+            db.removeChannel(1); assertEquals(1L,db.count()); assertEquals(1,db.channels().length()); assertEquals(0L,db.position("1_90"))
+        } } finally { context.deleteDatabase(name) }
+    }
+
+    @Test fun pauseRequestedBeforeWorkerStartsStopsBeforeNetworkAndKeepsCursor() {
+        val app = context.applicationContext as TgApplication
+        val saved = app.database.channels()
+        if (saved.length() == 0 || app.engine == null) return
+        val id = saved.getJSONObject(0).getLong("channel_id")
+        val before = app.database.channel(id)!!.toString()
+        val count = app.database.count(id)
+        app.prepareScan()
+        app.cancelScan()
+        assertEquals("paused", app.scanChannel(app.engine!!, id, false))
+        assertEquals(before, app.database.channel(id).toString())
+        assertEquals(count, app.database.count(id))
+        app.prepareScan()
+    }
+}
