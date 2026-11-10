@@ -42,6 +42,7 @@ class PlayerActivity : AppCompatActivity() {
         override fun onPlayerError(error: PlaybackException) { updateNote() }
         override fun onMediaMetadataChanged(mediaMetadata: MediaMetadata) {
             view.title = mediaMetadata.title ?: intent.getStringExtra("title") ?: "正在播放"
+            view.source = mediaMetadata.artist ?: ""
         }
     }
 
@@ -93,6 +94,7 @@ class PlayerActivity : AppCompatActivity() {
                 val player = pending.get()
                 controller = player
                 view.title = player.mediaMetadata.title ?: intent.getStringExtra("title") ?: "正在播放"
+                view.source = player.mediaMetadata.artist ?: ""
                 view.player = player
                 player.addListener(listener)
                 // long: 同一视频返回页面只重新绑定控制器，不能重新 setMediaItem 导致跳回旧进度。

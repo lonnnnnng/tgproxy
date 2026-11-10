@@ -93,6 +93,30 @@ class CorePlaybackTest {
         }
     }
 
+    @Test fun miniPlayerCanPauseAndRestartAfterEnd() {
+        await { app.engine != null }
+        val intent = Intent(context, PlayerActivity::class.java).putExtra("validation", true)
+        ActivityScenario.launch<PlayerActivity>(intent).use { scenario ->
+            fun matches(check: (Player) -> Boolean): Boolean {
+                var result = false
+                scenario.onActivity { result = it.testPlayer()?.let(check) ?: false }
+                return result
+            }
+            await { matches { it.isPlaying } }
+            scenario.onActivity { PlaybackService.togglePlayback() }
+            await { matches { !it.playWhenReady } }
+            scenario.onActivity { PlaybackService.togglePlayback() }
+            await { matches { it.isPlaying } }
+            scenario.onActivity { it.testPlayer()!!.let { p -> p.seekTo(p.duration) } }
+            await { matches { it.playbackState == Player.STATE_ENDED } }
+            scenario.onActivity {
+                assertFalse(PlaybackService.isPlaybackRequested())
+                PlaybackService.togglePlayback()
+            }
+            await { matches { it.isPlaying && it.currentPosition < 5000 } }
+        }
+    }
+
     @Test fun sessionIsEncryptedAndIndexSurvivesReopen() {
         // long: 使用独立测试文件与数据库，设备验证不能覆盖用户后来登录的真实会话和索引。
         val vault = SessionVault(context, "validation-vault.enc", "tgproxy-validation-key")

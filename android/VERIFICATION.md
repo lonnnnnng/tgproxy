@@ -91,3 +91,34 @@ GSYVideoPlayer v14.0.0 的源码审查确认标准 Exo manager 会自己创建/�
 - 未修改服务端、Go Range 或 Telegram 登录/索引逻辑；真实频道扫描与授权未触发。
 
 GitHub 发布说明见 [RELEASE-v0.3.0.md](RELEASE-v0.3.0.md)，完整设备日志与截图见忽略目录 `app/build/validation/`。
+
+
+## 紧凑纯列表改版与发布时间（2026-11-10）
+
+本节为 0.3.0 基础上的本机体验包，版本号仍为 `0.3.0` / `4`，不等同于已发布 `android-v0.3.0` 的文件。仅修改 Android 界面、展示查询及本地播放控制；未重建或修改 Go 核心，未提交、推送或发布。
+
+界面取消相册和封面占位；列表显示现有 Telegram 消息发布日期，详情显示完整时间并按设备时区转换。缺失日期不显示。三个 Tab 无页面大标题，搜索与筛选固定；频道和设置为紧凑行，新增／排序使用面板。播放器收拢更多菜单，保留倍速、手势、锁定和旋转。迷你播放器支持暂停、继续与结束后重播。
+
+- POCO F2 Pro（31936bb6）保留数据覆盖安装 Debug 和 Release；只操作此手机，没有操作另一台 Redmi。
+- 单元测试通过：Unix 秒、设备时区、无效日期；Debug、Release、测试 APK、组件 Release AAR 与两模块 Lint 构建通过。App Lint 0 错误、19 条警告；组件 0 错误、3 条依赖更新提示。
+- 全套 runner `OK (20 tests)`：19 项通过，登录草稿因 Debug 已授权而跳过 1 项。覆盖详情导航与日期、无封面列表、搜索／分页／固定筛选／草稿／主题，数据库日期排序与续播过滤，Range 字节与鉴权、后台和重新打开、结束后重播，倍速、双击、锁定、亮度音量、比例／旋转及更多菜单。
+- 字体 1.3 的专项 runner `OK (7 tests)`，7 项实际通过。最终搜索输入布局修正后再执行 NavigationTest，`OK (7 tests)`，6 项通过、登录草稿 1 项跳过；添加了文字可用高度断言并复核截图。设备字体恢复到原先 1.0，主题偏好也在用例结束恢复。
+- 浅深色列表、频道、我的、详情及横竖屏播放器截图已检查。Debug 真实媒体库仍为 1 个频道、391 条视频；Release 仍处于未登录空库状态，两包数据独立，未迁移账号。无重新登录或真实扫描。播放器自动化使用本地测试片，未进行新的 Telegram 取流、全部编码或长时间后台验证。
+- 验证中修复了搜索框初始化空指针、大字体提示裁切、底部面板关闭后回调丢失、Media3 按钮图标重叠及结束后的迷你播放器重播。音轨测试最初误用“音轨”查找官方“音频”菜单，已按当前依赖资源修正。先前失败日志保留。
+- 签名 APK：`app/build/outputs/apk/release/tgproxy-android-compact-ui.apk`，SHA-256 `a012886f36649827d39215111743d8af97183ed802c696494b90aa0e3ffcaec6`。v2/v3 签名验证通过；沿用证书 `ebbd4841f95c5fe0e7aad410a9f685b8c549ce958fcc18bb39efbe2533eb3206`。已在 POCO 覆盖安装并启动，设备安装包读回 SHA-256 与本地完全一致。
+
+证据保存在忽略目录 `app/build/validation/compact-ui/`：`tests-final-2.log`、`large-font-tests.log`、`search-fit-tests.log`、`build-search-fit.log`、`signature.txt`、`screens/`、`search-fit/` 和 `release-installed.png`。HTML 原型同步为纯列表；浏览器核验了列表、详情、设置入口，控制台无错误。原型中的画面／日期是示例数据。
+
+
+## Android 0.4.0 发布制品（2026-11-10）
+
+本节对应标签 `android-v0.4.0`，版本 `0.4.0` / `versionCode 5`。发布内容包含紧凑纯列表、发布日期与详情页、频道／我的页面改版，以及播放器面板和迷你播放器修复。用户将在正式发布后自行进行真机验收。
+
+- 使用 `build-release.sh` 重建 Go ARM64 AAR、Release APK 并签名；`testDebugUnitTest`、App／组件 Lint 和组件 Release AAR 构建通过。Lint 0 错误；App 19 条警告，组件 3 条依赖更新提示。
+- 发布前的设备验证沿用上节记录：19 项通过、1 项登录条件跳过；大字体专项通过，最终搜索修正后的导航复测 6 项通过、1 项跳过。本次版本号更新后未重复设备测试或覆盖手机。
+- `aapt` 核实包名 `dev.tgproxy.mobile`、版本 `0.4.0`／`5`、minSdk 26、targetSdk 36、仅 `arm64-v8a`。
+- `apksigner` 验证 v2/v3 签名通过，证书 SHA-256 仍为 `ebbd4841f95c5fe0e7aad410a9f685b8c549ce958fcc18bb39efbe2533eb3206`。
+- 正式 APK SHA-256：`4f221168c37da4aeab4731f902cbd4ba38bd5ffe12221d8301d58fde611bbece`。
+- 播放器 AAR SHA-256：`3db36604a4086eb8ea0cf083cb71e48e11175fced3da230c63231ee129c8a86c`。
+
+发布说明见 [RELEASE-v0.4.0.md](RELEASE-v0.4.0.md)，构建日志位于忽略目录 `app/build/validation/android-v0.4.0-build.log`。Release 附 APK、组件 AAR 及各自校验文件。

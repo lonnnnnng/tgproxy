@@ -5,16 +5,29 @@
         android:paddingHorizontal="8dp" android:background="@drawable/pc_top_shade">
         <ImageButton android:id="@+id/pc_back" style="@style/PcIcon"
             android:src="@drawable/pc_back" android:contentDescription="@string/pc_back" />
-        <TextView android:id="@+id/pc_title" android:layout_width="0dp" android:layout_weight="1"
-            android:layout_height="48dp" android:gravity="center_vertical"
-            android:textColor="#FFFFFF" android:textSize="15sp" android:fontFamily="sans-serif-medium"
-            android:maxLines="1" android:ellipsize="end" android:layout_marginHorizontal="8dp" />
-        <ImageButton android:id="@+id/pc_help" style="@style/PcIcon"
-            android:src="@drawable/pc_help" android:contentDescription="@string/pc_help" />
-        <ImageButton android:id="@+id/pc_info" style="@style/PcIcon"
-            android:src="@drawable/pc_info" android:contentDescription="@string/pc_info" />
-        <ImageButton android:id="@+id/pc_rotate" style="@style/PcIcon"
-            android:src="@drawable/pc_rotate" android:contentDescription="@string/pc_rotate" />
+        <LinearLayout android:layout_width="0dp" android:layout_weight="1"
+            android:layout_height="48dp" android:orientation="vertical" android:gravity="center_vertical"
+            android:layout_marginHorizontal="8dp">
+            <TextView android:id="@+id/pc_title" android:layout_width="match_parent" android:layout_height="wrap_content"
+                android:textColor="#FFFFFF" android:textSize="14sp" android:fontFamily="sans-serif-medium"
+                android:maxLines="1" android:ellipsize="end" />
+            <TextView android:id="@+id/pc_source" android:layout_width="match_parent" android:layout_height="wrap_content"
+                android:textColor="#C0C9DA" android:textSize="11sp" android:layout_marginTop="3dp"
+                android:maxLines="1" android:ellipsize="end" android:visibility="gone" />
+        </LinearLayout>
+        <FrameLayout android:layout_width="48dp" android:layout_height="48dp">
+            <!-- long: 保留官方音轨和字幕菜单的锚点，更多面板只负责入口分组。 -->
+            <!-- long: Media3 会重设按钮透明度，统一隐藏父容器以免旧图标叠到更多入口上。 -->
+            <FrameLayout android:layout_width="48dp" android:layout_height="48dp"
+                android:visibility="invisible" android:importantForAccessibility="noHideDescendants">
+                <ImageButton android:id="@id/exo_settings" style="@style/PcIcon"
+                    android:focusable="false" android:src="@drawable/pc_settings" android:contentDescription="@string/pc_settings" />
+                <ImageButton android:id="@id/exo_subtitle" style="@style/PcIcon"
+                    android:focusable="false" android:contentDescription="@string/pc_subtitles" />
+            </FrameLayout>
+            <ImageButton android:id="@+id/pc_more" style="@style/PcIcon"
+                android:src="@drawable/pc_more" android:contentDescription="@string/pc_more" />
+        </FrameLayout>
     </LinearLayout>
 
     <LinearLayout android:id="@id/exo_center_controls"
@@ -46,13 +59,12 @@
             app:bar_height="3dp" app:scrubber_enabled_size="10dp" />
         <HorizontalScrollView android:layout_width="match_parent" android:layout_height="48dp" android:fillViewport="true" android:scrollbars="none">
         <LinearLayout android:layout_width="wrap_content" android:layout_height="48dp" android:gravity="center_vertical">
-            <TextView android:id="@id/exo_playback_speed" style="@style/PcAction" android:text="@string/pc_speed" />
-            <TextView android:id="@+id/pc_ratio" style="@style/PcAction" android:text="@string/pc_ratio" />
-            <TextView android:id="@+id/pc_lock" style="@style/PcAction" android:text="@string/pc_lock" />
-            <ImageButton android:id="@id/exo_subtitle" style="@style/PcIcon"
-                android:contentDescription="@string/pc_subtitles" />
-            <ImageButton android:id="@id/exo_settings" style="@style/PcIcon"
-                android:src="@drawable/pc_settings" android:contentDescription="@string/pc_settings" />
+            <TextView android:id="@+id/pc_lock" style="@style/PcAction" android:layout_weight="0" android:text="@string/pc_lock" />
+            <View android:layout_width="0dp" android:layout_height="1dp" android:layout_weight="1" />
+            <TextView android:id="@id/exo_playback_speed" style="@style/PcAction" android:layout_weight="0" android:text="@string/pc_speed" />
+            <TextView android:id="@+id/pc_ratio" style="@style/PcAction" android:layout_weight="0" android:text="@string/pc_ratio" />
+            <ImageButton android:id="@+id/pc_rotate" style="@style/PcIcon"
+                android:src="@drawable/pc_rotate" android:contentDescription="@string/pc_rotate" />
         </LinearLayout>
         </HorizontalScrollView>
     </LinearLayout>

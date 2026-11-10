@@ -32,18 +32,21 @@ class NavigationTest {
     }
 
     private fun views(activity: MainActivity) = descendants(activity.findViewById(android.R.id.content))
+    private fun inputViews(activity: MainActivity) = views(activity) + (activity.activeSheetContent?.let(::descendants) ?: emptyList())
+    private fun openChannelSheet(activity: MainActivity) { click(activity, "添加频道") }
+    private fun closeSheet(activity: MainActivity) {
+        activity.activeSheetContent?.let(::descendants)?.first { it.contentDescription == "关闭面板" }?.performClick()
+    }
 
     private fun click(activity: MainActivity, label: String) {
-        val button = views(activity).filterIsInstance<MaterialButton>().firstOrNull { it.text.toString() == label }
+        val button = inputViews(activity).filterIsInstance<MaterialButton>().firstOrNull { it.text.toString() == label }
         assertNotNull("找不到按钮：$label", button)
         assertTrue("按钮不可操作：$label", button!!.isEnabled)
         button.performClick()
     }
 
     private fun assertInput(activity: MainActivity, label: String) {
-        val input = views(activity).filterIsInstance<TextInputLayout>().firstOrNull { it.hint.toString() == label }
-        assertNotNull("输入框未创建：$label", input)
-        assertNotNull("编辑控件未添加：$label", input!!.editText)
+        assertNotNull("编辑控件未添加：$label", input(activity, label))
     }
 
     @Test fun homeConnectChannelAndCredentialsRenderWithoutCrash() {
@@ -58,7 +61,9 @@ class NavigationTest {
                 val phase = org.json.JSONObject(app.engine!!.status()).optString("state")
                 if (phase in listOf("ready", "connecting", "offline", "expired")) {
                     views(activity).filterIsInstance<BottomNavigationView>().single().selectedItemId = R.id.nav_channels
+                    openChannelSheet(activity)
                     assertInput(activity, "频道链接 / 用户名 / ID")
+                    closeSheet(activity)
                     return@onActivity
                 }
                 assertInput(activity, "手机号（含国家区号）")
@@ -66,19 +71,24 @@ class NavigationTest {
                 assertInput(activity, "API ID")
                 assertInput(activity, "API Hash")
                 views(activity).filterIsInstance<BottomNavigationView>().single().selectedItemId = R.id.nav_channels
-                assertInput(activity, "频道链接 / 用户名 / ID")
+                openChannelSheet(activity)
+                    assertInput(activity, "频道链接 / 用户名 / ID")
+                    closeSheet(activity)
                 views(activity).filterIsInstance<BottomNavigationView>().single().selectedItemId = R.id.nav_account
                 assertInput(activity, "手机号（含国家区号）")
             }
             scenario.recreate()
             scenario.onActivity { activity ->
                 views(activity).filterIsInstance<BottomNavigationView>().single().selectedItemId = R.id.nav_channels
-                assertInput(activity, "频道链接 / 用户名 / ID")
+                openChannelSheet(activity)
+                    assertInput(activity, "频道链接 / 用户名 / ID")
+                    closeSheet(activity)
             }
         }
     }
-    private fun input(activity: MainActivity, label: String): EditText = views(activity)
-        .filterIsInstance<TextInputLayout>().first { it.hint.toString() == label }.editText!!
+    private fun input(activity: MainActivity, label: String): EditText = inputViews(activity)
+        .filterIsInstance<EditText>().firstOrNull { it.hint?.toString() == label || it.contentDescription?.toString() == label }
+        ?: inputViews(activity).filterIsInstance<TextInputLayout>().first { it.hint.toString() == label }.editText!!
 
     @Test fun channelDraftSurvivesNavigationAndRecreation() {
         // long: 未提交链接应跨页面和旋转保留，但用例不添加频道或改写真实索引。
@@ -86,13 +96,17 @@ class NavigationTest {
             scenario.onActivity { activity ->
                 val navigation = views(activity).filterIsInstance<BottomNavigationView>().single()
                 navigation.selectedItemId = R.id.nav_channels
+                openChannelSheet(activity)
                 input(activity, "频道链接 / 用户名 / ID").setText("https://t.me/example_draft")
+                closeSheet(activity)
                 navigation.selectedItemId = R.id.nav_account
                 navigation.selectedItemId = R.id.nav_channels
+                openChannelSheet(activity)
                 assertEquals("https://t.me/example_draft", input(activity, "频道链接 / 用户名 / ID").text.toString())
             }
             scenario.recreate()
             scenario.onActivity { activity ->
+                openChannelSheet(activity)
                 assertEquals("https://t.me/example_draft", input(activity, "频道链接 / 用户名 / ID").text.toString())
             }
         }
@@ -137,6 +151,7 @@ class NavigationTest {
         val app = InstrumentationRegistry.getInstrumentation().targetContext.applicationContext as TgApplication
         assumeTrue("需要已索引的媒体库", app.database.count() > 50)
         ActivityScenario.launch(MainActivity::class.java).use { scenario ->
+            var savedScroll = 0
             Thread.sleep(1500)
             scenario.onActivity { activity ->
                 views(activity).filterIsInstance<ScrollView>().single().scrollTo(0, 800)
@@ -152,12 +167,14 @@ class NavigationTest {
             scenario.onActivity { activity ->
                 val scroll = views(activity).filterIsInstance<ScrollView>().single()
                 scroll.scrollTo(0, 800)
+                savedScroll = scroll.scrollY
+                assertTrue(savedScroll > 0)
                 views(activity).filterIsInstance<BottomNavigationView>().single().selectedItemId = R.id.nav_channels
                 views(activity).filterIsInstance<BottomNavigationView>().single().selectedItemId = R.id.nav_videos
             }
             Thread.sleep(500)
             scenario.onActivity { activity ->
-                assertEquals(800, views(activity).filterIsInstance<ScrollView>().single().scrollY)
+                assertEquals(savedScroll, views(activity).filterIsInstance<ScrollView>().single().scrollY)
                 click(activity, "下一页")
             }
             Thread.sleep(500)
@@ -175,6 +192,8 @@ class NavigationTest {
             Thread.sleep(1200)
             scenario.onActivity { activity ->
                 val search = input(activity, "搜索视频名称")
+                val metrics = search.paint.fontMetricsInt
+                assertTrue("大字体搜索文字不能被上下内边距裁切", search.height - search.compoundPaddingTop - search.compoundPaddingBottom >= metrics.descent - metrics.ascent)
                 val start = android.graphics.Rect()
                 assertTrue(search.getGlobalVisibleRect(start))
                 val filters = views(activity).filterIsInstance<com.google.android.material.button.MaterialButtonToggleGroup>().single()
@@ -232,12 +251,67 @@ class NavigationTest {
                             activity.resources.configuration.uiMode and Configuration.UI_MODE_NIGHT_MASK)
                         assertEquals(R.id.nav_account, views(activity).filterIsInstance<BottomNavigationView>().single().selectedItemId)
                     }
+                    val themeName = if (mode == AppCompatDelegate.MODE_NIGHT_YES) "dark" else "light"
+                    capture("account-$themeName.png")
+                    for ((id, name) in listOf(R.id.nav_channels to "channels", R.id.nav_videos to "library")) {
+                        scenario.onActivity { views(it).filterIsInstance<BottomNavigationView>().single().selectedItemId = id }
+                        Thread.sleep(600)
+                        capture("$name-$themeName.png")
+                    }
                 }
             }
         } finally {
             // long: 主题回归只改变被测应用，并在完成后恢复用户原有外观偏好。
             preferences.edit().putInt("theme", original).commit()
             instrumentation.runOnMainSync { AppCompatDelegate.setDefaultNightMode(original) }
+        }
+    }
+
+    @Test fun listShowsPublishedDateAndOpensDetailsWithoutCovers() {
+        val instrumentation = InstrumentationRegistry.getInstrumentation()
+        val app = instrumentation.targetContext.applicationContext as TgApplication
+        assumeTrue("需要已索引的媒体库", app.database.count() > 0)
+        val monitor = instrumentation.addMonitor(VideoDetailActivity::class.java.name, null, false)
+        var detail: VideoDetailActivity? = null
+        try {
+            ActivityScenario.launch(MainActivity::class.java).use { scenario ->
+                Thread.sleep(1200)
+                var name = ""
+                var date = ""
+                scenario.onActivity { activity ->
+                    val row = views(activity).first { it.contentDescription?.toString()?.startsWith("查看视频：") == true }
+                    assertTrue("纯文字列表不能包含封面", descendants(row).none { it is android.widget.ImageView })
+                    val labels = descendants(row).filterIsInstance<android.widget.TextView>()
+                    name = labels.first().text.toString()
+                    date = labels.firstOrNull { it.contentDescription?.toString()?.startsWith("发布时间 ") == true }?.text?.toString().orEmpty()
+                    row.performClick()
+                }
+                detail = monitor.waitForActivityWithTimeout(5000) as? VideoDetailActivity
+                assertNotNull("列表未打开详情", detail)
+                capture("detail.png")
+                instrumentation.runOnMainSync {
+                    val texts = descendants(detail!!.window.decorView).filterIsInstance<android.widget.TextView>().map { it.text.toString() }
+                    assertTrue(texts.contains(name))
+                    if (date.isNotEmpty()) assertTrue("详情应显示完整发布时间", texts.any { it.startsWith(date) && it.length > date.length })
+                    detail!!.finish()
+                }
+                instrumentation.waitForIdleSync()
+                scenario.onActivity { assertEquals("", input(it, "搜索视频名称").text.toString()) }
+            }
+        } finally {
+            instrumentation.runOnMainSync { detail?.finish() }
+            instrumentation.removeMonitor(monitor)
+        }
+    }
+
+    private fun capture(name: String) {
+        val instrument = InstrumentationRegistry.getInstrumentation()
+        instrument.waitForIdleSync()
+        Thread.sleep(300)
+        val directory = java.io.File(instrument.targetContext.getExternalFilesDir(null), "validation/compact-ui").apply { mkdirs() }
+        instrument.uiAutomation.takeScreenshot().let { bitmap ->
+            java.io.File(directory, name).outputStream().use { bitmap.compress(android.graphics.Bitmap.CompressFormat.PNG, 100, it) }
+            bitmap.recycle()
         }
     }
 

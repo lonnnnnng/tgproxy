@@ -1,0 +1,50 @@
+{
+  "version": 1,
+  "scope": "Approved HTML prototype implemented in Android 0.4.0",
+  "mode": "operate",
+  "colors": {
+    "light": {
+      "background": "#ffffff",
+      "surface": "#f4f6fa",
+      "text": "#202735",
+      "muted": "#626d80",
+      "accent": "#4265d2",
+      "border": "#e9edf3"
+    },
+    "dark": {
+      "background": "#171d27",
+      "surface": "#242c3a",
+      "text": "#ecf0f7",
+      "muted": "#a2aec2",
+      "accent": "#aec3ff",
+      "border": "#2c3545"
+    }
+  },
+  "typography": {
+    "family": "Roboto, Noto Sans SC, system sans-serif",
+    "screenTitle": null,
+    "sectionTitle": 14,
+    "videoTitle": 13,
+    "metadataMin": 11
+  },
+  "spacing": {
+    "pageGutter": 20
+  },
+  "radius": {
+    "button": 12,
+    "sheet": 24
+  },
+  "layout": {
+    "tabHeadings": false,
+    "channelRowHeight": 52,
+    "settingRowHeight": 49,
+    "bottomNavigationHeight": 56,
+    "channelStatusCard": false,
+    "channelAvatarSize": 30,
+    "videoViews": {
+      "list": "compact text-only rows including publication date and continue-watching"
+    },
+    "videoListRowMinHeight": 55,
+    "continueRowsMax": 2
+  }
+}

@@ -121,6 +121,20 @@ class PlayerControlsTest {
             }
             target != null
         }
+        // long: BottomSheet 展开时节点先出现再移动，等位置稳定后触摸，避免点到动画前的坐标。
+        var stable = 0
+        var previous = Rect()
+        await {
+            val node = instrument.uiAutomation.rootInActiveWindow?.findAccessibilityNodeInfosByText(text)
+                ?.firstOrNull { it.isVisibleToUser && it.isEnabled }
+            val current = Rect()
+            node?.getBoundsInScreen(current)
+            if (!current.isEmpty && current == previous) stable++ else stable = 0
+            previous = current
+            target = node
+            Thread.sleep(100)
+            stable >= 3
+        }
         val bounds = Rect()
         target!!.getBoundsInScreen(bounds)
         assertFalse(bounds.isEmpty)
@@ -258,6 +272,20 @@ class PlayerControlsTest {
             ready(scenario)
             assertEquals(3, preferences.aspect)
             scenario.onActivity { it.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED }
+        }
+    }
+
+    @Test fun moreMenuKeepsAudioAndPlaybackInfoReachable() {
+        launch().use { scenario ->
+            ready(scenario)
+            scenario.onActivity { controls(it).showControls(); it.findViewById<View>(dev.longvideo.controls.R.id.pc_more).performClick() }
+            clickNode("音轨与播放设置")
+            await { instrument.uiAutomation.rootInActiveWindow?.findAccessibilityNodeInfosByText(context.getString(androidx.media3.ui.R.string.exo_track_selection_title_audio))?.any { it.isVisibleToUser } == true }
+            instrument.sendKeyDownUpSync(android.view.KeyEvent.KEYCODE_BACK)
+            scenario.onActivity { controls(it).showControls(); it.findViewById<View>(dev.longvideo.controls.R.id.pc_more).performClick() }
+            clickNode("播放信息")
+            await { instrument.uiAutomation.rootInActiveWindow?.findAccessibilityNodeInfosByText("缓冲至")?.any { it.isVisibleToUser } == true }
+            clickNode("关闭")
         }
     }
 

@@ -70,7 +70,7 @@ class PlaybackService : MediaSessionService() {
                             val uri = if (key == "validation") app.validationMedia() else core.playbackURL(key)
                             item.buildUpon().setUri(uri).setMediaMetadata(MediaMetadata.Builder()
                                 .setTitle(row?.getString("name") ?: "本地播放测试")
-                                .setArtist("TGProxy").build()).build()
+                                .setArtist(row?.let { app.database.channel(it.optLong("channel_id"))?.optString("title") } ?: "TGProxy").build()).build()
                         })
                     } catch (_: Exception) { Futures.immediateFailedFuture(IllegalStateException("无法打开视频，请检查连接和索引")) }
                 }
@@ -110,6 +110,27 @@ class PlaybackService : MediaSessionService() {
         private var active: PlaybackService? = null
         @Volatile var currentKey: String? = null
             private set
+        fun isPlaybackRequested(): Boolean = active?.let {
+            !it.released && !it.stopping && it.player.playWhenReady && it.player.playbackState != Player.STATE_ENDED
+        } ?: false
+        fun togglePlayback() = withActivePlayer { player ->
+            if (player.isCommandAvailable(Player.COMMAND_PLAY_PAUSE)) {
+                // long: 播完后仅 play 不会离开结束状态；缓冲中仍按用户的播放意图显示并执行暂停。
+                if (player.playbackState == Player.STATE_ENDED) {
+                    if (player.isCommandAvailable(Player.COMMAND_SEEK_IN_CURRENT_MEDIA_ITEM)) player.seekTo(0)
+                    player.play()
+                } else if (player.playWhenReady) player.pause() else player.play()
+            }
+        }
+        fun setPreferredSpeed(speed: Float) = withActivePlayer { player ->
+            if (player.isCommandAvailable(Player.COMMAND_SET_SPEED_AND_PITCH)) player.setPlaybackSpeed(speed)
+        }
+        private fun withActivePlayer(action: (Player) -> Unit) {
+            // long: 首页控制入口可能晚于服务关闭回调执行，只在主线程确认旧播放器仍存活后操作。
+            val service = active ?: return
+            val run = Runnable { if (active === service && !service.released && !service.stopping) action(service.player) }
+            if (Looper.myLooper() == Looper.getMainLooper()) run.run() else service.handler.post(run)
+        }
         fun stopPlayback(context: Context, revokeSession: Boolean = false) {
             // long: 普通停止允许已绑定页面完成解绑；退出账号则封锁并释放旧会话，避免跨账号继续取流。
             active?.let {

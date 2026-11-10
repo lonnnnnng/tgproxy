@@ -122,15 +122,22 @@ class MediaDatabase(context: Context, name: String = "media.db") : SQLiteOpenHel
             db.setTransactionSuccessful()
         } finally { db.endTransaction() }
     }
-    fun videos(search: String = "", offset: Int = 0, limit: Int = 50, channelID: Long = 0, recent: Boolean = false): JSONArray {
+    fun videos(search: String = "", offset: Int = 0, limit: Int = 50, channelID: Long = 0, recent: Boolean = false, sort: String = "newest"): JSONArray {
         val term = "%" + search.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%"
         // long: LIKE 通配符由应用转义，用户可按字面搜索带下划线和百分号的文件名。
         val sql = "SELECT v.payload FROM videos v " + (if (recent) "JOIN playback p ON p.key=v.key " else "") +
             "WHERE v.name LIKE ? ESCAPE '\\' AND (CAST(? AS INTEGER)=0 OR v.channel_id=?) ORDER BY " +
-            (if (recent) "p.updated DESC," else "") + "v.date DESC,v.key LIMIT ? OFFSET ?"
+            (if (recent) "p.updated DESC," else "") +
+            (when (sort) { "oldest" -> "v.date ASC,v.key"; "name" -> "v.name COLLATE NOCASE,v.key"; else -> "v.date DESC,v.key" }) + " LIMIT ? OFFSET ?"
         return readableDatabase.rawQuery(sql, arrayOf(term, channelID.toString(), channelID.toString(), limit.coerceIn(1, 1000).toString(), offset.coerceAtLeast(0).toString())).use {
             JSONArray().apply { while (it.moveToNext()) put(JSONObject(it.getString(0))) }
         }
+    }
+    fun continueWatching(limit: Int = 2): JSONArray = readableDatabase.rawQuery(
+        "SELECT v.payload,p.position FROM videos v JOIN playback p ON p.key=v.key WHERE p.position>0 ORDER BY p.updated DESC,v.key LIMIT ?",
+        arrayOf(limit.coerceIn(1, 10).toString())).use { cursor ->
+        // long: 最近播放包含已经看完的视频，继续观看只选仍有断点的条目。
+        JSONArray().apply { while (cursor.moveToNext()) put(JSONObject(cursor.getString(0)).put("position", cursor.getLong(1))) }
     }
     fun video(key: String): JSONObject? = readableDatabase.rawQuery("SELECT payload FROM videos WHERE key=?", arrayOf(key)).use {
         if (it.moveToFirst()) JSONObject(it.getString(0)) else null

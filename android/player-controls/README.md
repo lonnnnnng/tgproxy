@@ -1,12 +1,12 @@
 # Media3 播放控制组件
 
-`player-controls` 是可复用的 Android Views library，接收 Media3 `Player`，支持 ExoPlayer 和 MediaController。组件不依赖 TGProxy、Telegram、数据库、媒体 URL 或账号凭证。当前随本仓库维护，[Android 0.3.0 发行附件](https://github.com/lonnnnnng/tgproxy/releases/tag/android-v0.3.0) 提供 AAR，尚未发布独立 Maven/JitPack 坐标。
+`player-controls` 是可复用的 Android Views library，接收 Media3 `Player`，支持 ExoPlayer 和 MediaController。组件不依赖 TGProxy、Telegram、数据库、媒体 URL 或账号凭证。当前随本仓库维护，[Android 0.4.0 发行附件](https://github.com/lonnnnnng/tgproxy/releases/tag/android-v0.4.0) 提供 AAR，尚未发布独立 Maven/JitPack 坐标。
 
 ## 能力
 
 | 操作 | 行为 |
 | --- | --- |
-| 倍速 | 底栏直接打开官方 Media3 倍速菜单；记住上次选择 |
+| 倍速 | 底栏直接打开倍速底部面板；记住上次选择 |
 | 长按画面 | 播放中临时 2×；松手、取消、失焦、锁定或进入后台时恢复 |
 | 双击画面 | 左侧后退 10 秒、右侧前进 10 秒；不越过媒体边界 |
 | 左侧上下滑动 | 调整当前窗口亮度；进入后台恢复原值，包括自动亮度的 -1 |
@@ -35,6 +35,7 @@ implementation(project(":player-controls"))
 val controls = VideoControlsView(this).apply {
     attachWindow(window)
     title = "视频标题"
+    source = "频道来源"
     onBack = { finish() }
     onRotate = { toggleOrientation() }
     onInfo = { showPlaybackInfo() }
@@ -51,7 +52,7 @@ controls.player = null
 
 示例的 `toggleOrientation()`、`showPlaybackInfo()` 和 `mediaController` 由宿主提供。宿主负责媒体准备、音频焦点、后台服务、窗口安全区及 Player/MediaController 的创建与释放。系统返回键先检查 `controls.isLocked`，锁定时调用 `setLocked(false)`，其余情况执行正常返回。
 
-`title` 由宿主更新。TGProxy 监听 `onMediaMetadataChanged`，防止切换媒体时保留旧标题。服务在 UI 绑定前开始播放时，可调用 `setPlaybackSpeed(PlaybackPreferences(context).speed)` 恢复倍率。长按 2× 不覆盖持久化偏好。
+`title` 和可选的 `source` 由宿主更新。TGProxy 监听 `onMediaMetadataChanged`，防止切换媒体时保留旧标题。服务在 UI 绑定前开始播放时，可调用 `setPlaybackSpeed(PlaybackPreferences(context).speed)` 恢复倍率。长按 2× 不覆盖持久化偏好。
 
 ## 构建 AAR
 

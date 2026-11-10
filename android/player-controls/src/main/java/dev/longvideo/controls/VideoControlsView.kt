@@ -1,6 +1,7 @@
 package dev.longvideo.controls
 
 import android.content.Context
+import android.app.Dialog
 import android.annotation.SuppressLint
 import android.content.res.Configuration
 import android.graphics.Color
@@ -18,6 +19,8 @@ import android.view.Window
 import android.view.accessibility.AccessibilityManager
 import android.widget.FrameLayout
 import android.widget.TextView
+import android.widget.LinearLayout
+import android.widget.ScrollView
 import androidx.appcompat.app.AlertDialog
 import androidx.media3.common.C
 import androidx.media3.common.PlaybackParameters
@@ -26,6 +29,8 @@ import androidx.media3.common.VideoSize
 import androidx.media3.ui.AspectRatioFrameLayout
 import androidx.media3.ui.PlayerView
 import com.google.android.material.dialog.MaterialAlertDialogBuilder
+import com.google.android.material.bottomsheet.BottomSheetDialog
+import com.google.android.material.bottomsheet.BottomSheetBehavior
 import java.util.Locale
 import kotlin.math.abs
 import kotlin.math.roundToInt
@@ -51,7 +56,7 @@ class VideoControlsView @JvmOverloads constructor(context: Context, attrs: Attri
     private var initialBrightness: Float? = null
     private var selectedSpeed = preferences.speed
     private var boostedPlayer: Player? = null
-    private var activeDialog: AlertDialog? = null
+    private var activeDialog: Dialog? = null
     private val audio = context.getSystemService(Context.AUDIO_SERVICE) as AudioManager
     private val accessibility = context.getSystemService(Context.ACCESSIBILITY_SERVICE) as AccessibilityManager
     private val clearFeedback = Runnable { feedback.visibility = GONE }
@@ -64,6 +69,11 @@ class VideoControlsView @JvmOverloads constructor(context: Context, attrs: Attri
     var title: CharSequence
         get() = titleView.text
         set(value) { titleView.text = value }
+    var source: CharSequence = ""
+        set(value) {
+            field = value
+            video.findViewById<TextView>(R.id.pc_source).apply { text = value; visibility = if (value.isEmpty()) GONE else VISIBLE }
+        }
 
     var player: Player? = null
         set(value) {
@@ -104,10 +114,10 @@ class VideoControlsView @JvmOverloads constructor(context: Context, attrs: Attri
         addView(unlock, LayoutParams(-2, dp(48), Gravity.CENTER_VERTICAL or Gravity.START).apply { leftMargin = dp(20) })
         video.findViewById<View>(R.id.pc_back).setOnClickListener { onBack?.invoke() }
         video.findViewById<View>(R.id.pc_rotate).setOnClickListener { cancelInteraction(); onRotate?.invoke() }
-        video.findViewById<View>(R.id.pc_info).setOnClickListener { cancelInteraction(); onInfo?.invoke() }
-        video.findViewById<View>(R.id.pc_help).setOnClickListener { showHelp() }
+        video.findViewById<View>(R.id.pc_more).setOnClickListener { showMore() }
         video.findViewById<View>(R.id.pc_lock).setOnClickListener { setLocked(true) }
         aspectButton.setOnClickListener { showAspectPicker() }
+        speedButton.setOnClickListener { showSpeedPicker() }
         updateSpeed()
         applyAspect()
     }
@@ -150,6 +160,7 @@ class VideoControlsView @JvmOverloads constructor(context: Context, attrs: Attri
 
     override fun onConfigurationChanged(newConfig: Configuration) {
         cancelInteraction()
+        activeDialog?.dismiss()
         super.onConfigurationChanged(newConfig)
         post { applyAspect() }
     }
@@ -217,12 +228,53 @@ class VideoControlsView @JvmOverloads constructor(context: Context, attrs: Attri
     private fun showAspectPicker() {
         cancelInteraction()
         val options = resources.getStringArray(R.array.pc_ratios)
-        showDialog(MaterialAlertDialogBuilder(dialogContext()).setTitle(R.string.pc_ratio)
-            .setSingleChoiceItems(options, preferences.aspect) { dialog, index ->
-                preferences.aspect = index
-                applyAspect()
-                dialog.dismiss()
-            }.create())
+        showOptions(context.getString(R.string.pc_ratio), options.toList(), preferences.aspect) { index ->
+            preferences.aspect = index; applyAspect()
+        }
+    }
+
+    private fun showSpeedPicker() {
+        val speeds = listOf(.5f, .75f, 1f, 1.25f, 1.5f, 1.75f, 2f, 3f)
+        showOptions(context.getString(R.string.pc_speed), speeds.map { "${it}×" }, speeds.indexOf(selectedSpeed)) { index ->
+            player?.let { if (it.isCommandAvailable(Player.COMMAND_SET_SPEED_AND_PITCH)) it.setPlaybackSpeed(speeds[index]) }
+        }
+    }
+
+    private fun showMore() {
+        val labels = listOf(R.string.pc_audio, R.string.pc_subtitles, R.string.pc_info, R.string.pc_help)
+        showOptions(context.getString(R.string.pc_more), labels.map(context::getString)) { index ->
+            when (index) {
+                0 -> video.findViewById<View>(androidx.media3.ui.R.id.exo_settings).performClick()
+                1 -> video.findViewById<View>(androidx.media3.ui.R.id.exo_subtitle).let {
+                    if (it.isEnabled) it.performClick() else showFeedback(context.getString(R.string.pc_no_subtitles))
+                }
+                2 -> onInfo?.invoke()
+                3 -> showHelp()
+            }
+        }
+    }
+
+    private fun showOptions(title: String, labels: List<String>, selected: Int = -1, action: (Int) -> Unit) {
+        cancelInteraction()
+        val dialog = BottomSheetDialog(dialogContext())
+        val column = LinearLayout(dialog.context).apply {
+            orientation = LinearLayout.VERTICAL; setPadding(dp(20), dp(12), dp(20), dp(24))
+            addView(TextView(context).apply { text = title; textSize = 18f; setTextColor(Color.WHITE); setPadding(0, dp(8), 0, dp(12)) })
+        }
+        labels.forEachIndexed { index, label ->
+            column.addView(TextView(dialog.context).apply {
+                text = if (index == selected) "$label · ${context.getString(R.string.pc_selected)}" else label
+                textSize = 14f; setTextColor(if (index == selected) 0xFFB9CCFF.toInt() else Color.WHITE)
+                minHeight = dp(48); gravity = Gravity.CENTER_VERTICAL; isFocusable = true
+                val ripple = android.util.TypedValue(); context.theme.resolveAttribute(android.R.attr.selectableItemBackground, ripple, true)
+                setBackgroundResource(ripple.resourceId)
+                // long: 关闭面板会移除选项 View，后续操作须排到仍在窗口中的播放器，不能丢在已卸载的选项队列。
+                setOnClickListener { dialog.dismiss(); this@VideoControlsView.post { action(index) } }
+            }, LinearLayout.LayoutParams(-1, -2))
+        }
+        dialog.setContentView(ScrollView(dialog.context).apply { addView(column) })
+        showDialog(dialog)
+        dialog.behavior.state = BottomSheetBehavior.STATE_EXPANDED
     }
 
     private fun applyAspect() {
@@ -248,7 +300,7 @@ class VideoControlsView @JvmOverloads constructor(context: Context, attrs: Attri
             .setPositiveButton(R.string.pc_close, null).create())
     }
 
-    private fun showDialog(dialog: AlertDialog) {
+    private fun showDialog(dialog: Dialog) {
         cancelInteraction()
         activeDialog?.dismiss()
         activeDialog = dialog

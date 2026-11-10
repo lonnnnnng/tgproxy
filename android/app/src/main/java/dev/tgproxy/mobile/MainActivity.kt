@@ -14,7 +14,6 @@ import android.text.Editable
 import android.text.InputType
 import android.text.TextWatcher
 import android.view.Gravity
-import android.view.MenuItem
 import android.view.View
 import android.view.inputmethod.EditorInfo
 import android.widget.FrameLayout
@@ -31,11 +30,12 @@ import androidx.core.content.ContextCompat
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
-import com.google.android.material.appbar.MaterialToolbar
 import com.google.android.material.bottomnavigation.BottomNavigationView
 import com.google.android.material.button.MaterialButton
 import com.google.android.material.button.MaterialButtonToggleGroup
+import com.google.android.material.bottomsheet.BottomSheetDialog
 import com.google.android.material.card.MaterialCardView
+import dev.longvideo.controls.PlaybackPreferences
 import com.google.android.material.color.MaterialColors
 import com.google.android.material.dialog.MaterialAlertDialogBuilder
 import com.google.android.material.progressindicator.LinearProgressIndicator
@@ -52,12 +52,16 @@ class MainActivity : AppCompatActivity() {
     private val queryWorker = Executors.newSingleThreadExecutor()
     private lateinit var root: LinearLayout
     private lateinit var body: LinearLayout
-    private lateinit var toolbar: MaterialToolbar
     private lateinit var navigation: BottomNavigationView
     private lateinit var scroll: ScrollView
     private lateinit var videoHeader: LinearLayout
     private lateinit var miniPlayer: LinearLayout
     private var lastPlayingKey: String? = null
+    private var lastPlaying = false
+    private var sort = "newest"
+    private var activeSheet: BottomSheetDialog? = null
+    internal var activeSheetContent: View? = null
+        private set
     private var scanCard: View? = null
     private var scanPause: View? = null
     private var codeDraft = ""
@@ -72,6 +76,7 @@ class MainActivity : AppCompatActivity() {
     private var destination = R.id.nav_videos
     private var lastPhase = ""
     private var lastBusy = false
+    private var observedScan = false
     private var hasStarted = false
     private var status = JSONObject()
     private var scanStatus: TextView? = null
@@ -105,26 +110,30 @@ class MainActivity : AppCompatActivity() {
         override fun run() {
             status = app.engine?.let { JSONObject(it.status()) } ?: JSONObject()
             val phase = status.optString("state", "starting")
-            toolbar.subtitle = phaseLabel(phase)
-            toolbar.setSubtitleTextColor(when (phase) {
-                "ready" -> color(com.google.android.material.R.attr.colorSecondary)
-                "expired" -> color(com.google.android.material.R.attr.colorError)
-                else -> color(com.google.android.material.R.attr.colorOnSurfaceVariant)
-            })
-            progress.visibility = if (app.busy) View.VISIBLE else View.INVISIBLE
+            progress.visibility = if (app.busy) View.VISIBLE else View.GONE
             scanStatus?.text = app.scanMessage
-            val hasScanStatus = app.scanning || app.scanMessage != "索引任务等待开始"
+            val hasScanStatus = app.scanning
             scanCard?.visibility = if (hasScanStatus) View.VISIBLE else View.GONE
             scanPause?.visibility = if (app.scanning) View.VISIBLE else View.GONE
             scanPause?.isEnabled = true
             scanIndicator?.visibility = if (app.scanning) View.VISIBLE else View.GONE
+            if (app.scanning) observedScan = true
+            if (observedScan && !app.scanning && !app.busy) {
+                // long: 完成状态不常驻占空间，但暂停、失败和成功仍需反馈，并刷新本机索引结果。
+                observedScan = false
+                message(app.scanMessage)
+                if (destination == R.id.nav_videos) {
+                    pendingScrollRestore = scroll.scrollY
+                    showVideos()
+                }
+            }
             val signedOutForm = phase in setOf("signed_out", "starting")
             if (destination == R.id.nav_account && phase != lastPhase && !app.busy &&
                 !(signedOutForm && loginFormPhase == "phone")) render()
             if (destination == R.id.nav_videos && phase != lastPhase && !app.busy) {
                 if (lastPhase == "starting" || phase == "signed_out" || (lastPhase == "connecting" && phase == "ready")) render()
             }
-            if (PlaybackService.currentKey != lastPlayingKey) updateMiniPlayer()
+            if (PlaybackService.currentKey != lastPlayingKey || PlaybackService.isPlaybackRequested() != lastPlaying) updateMiniPlayer()
             if (app.busy != lastBusy) {
                 buttons.forEach { it.isEnabled = !app.busy }
                 if (lastBusy && !app.busy && destination == R.id.nav_channels) channelListContainer?.let(::loadChannels)
@@ -145,6 +154,10 @@ class MainActivity : AppCompatActivity() {
         recent = savedInstanceState?.getBoolean("recent") ?: false
         search = savedInstanceState?.getString("search") ?: ""
         page = savedInstanceState?.getInt("page") ?: 0
+        if (savedInstanceState == null && intent.hasExtra("browse_channel")) {
+            channelFilter = intent.getLongExtra("browse_channel", 0)
+        }
+        sort = getSharedPreferences("library", MODE_PRIVATE).getString("sort", "newest") ?: "newest"
         (lastCustomNonConfigurationInstance as? LoginDraft)?.let {
             credentialsExpanded = it.expanded; credentialsLoaded = it.loaded
             credentialDraftId = it.apiId; credentialDraftHash = it.hash; credentialEdited = it.edited
@@ -170,20 +183,9 @@ class MainActivity : AppCompatActivity() {
             insets
         }
 
-        toolbar = MaterialToolbar(this).apply {
-            setBackgroundColor(color(com.google.android.material.R.attr.colorSurface))
-            setTitleTextColor(color(com.google.android.material.R.attr.colorOnSurface))
-            setSubtitleTextColor(color(com.google.android.material.R.attr.colorOnSurfaceVariant))
-            setTitleTextAppearance(context, com.google.android.material.R.style.TextAppearance_Material3_TitleLarge)
-            setSubtitleTextAppearance(context, com.google.android.material.R.style.TextAppearance_Material3_LabelMedium)
-            setContentInsetsRelative(dp(20), dp(12))
-        }
-        root.addView(toolbar, LinearLayout.LayoutParams(-1, dp(64)))
-        toolbar.setOnMenuItemClickListener { item -> onToolbarAction(item) }
-
         progress = LinearProgressIndicator(this).apply {
             isIndeterminate = true
-            visibility = View.INVISIBLE
+            visibility = View.GONE
             trackThickness = dp(2)
             trackColor = android.graphics.Color.TRANSPARENT
         }
@@ -216,7 +218,14 @@ class MainActivity : AppCompatActivity() {
             setBackgroundColor(color(com.google.android.material.R.attr.colorSurface))
             menu.add(0, R.id.nav_videos, 0, "视频").setIcon(R.drawable.ic_video)
             menu.add(0, R.id.nav_channels, 1, "频道").setIcon(R.drawable.ic_channels)
-            menu.add(0, R.id.nav_account, 2, "账号").setIcon(R.drawable.ic_account)
+            menu.add(0, R.id.nav_account, 2, "我的").setIcon(R.drawable.ic_account)
+            itemIconSize = dp(20)
+            itemActiveIndicatorColor = ColorStateList.valueOf(color(com.google.android.material.R.attr.colorPrimaryContainer))
+            val navColors = ColorStateList(arrayOf(intArrayOf(android.R.attr.state_checked), intArrayOf()), intArrayOf(color(com.google.android.material.R.attr.colorPrimary), muted()))
+            itemIconTintList = navColors; itemTextColor = navColors
+            itemPaddingTop = dp(5); itemPaddingBottom = dp(3)
+            itemTextAppearanceActive = R.style.TextAppearance_TGProxy_Nav
+            itemTextAppearanceInactive = R.style.TextAppearance_TGProxy_Nav
             selectedItemId = destination
             setOnItemSelectedListener { item ->
                 scrollPositions[destination] = scroll.scrollY
@@ -226,7 +235,7 @@ class MainActivity : AppCompatActivity() {
         }
         miniPlayer = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         root.addView(miniPlayer)
-        root.addView(navigation)
+        root.addView(navigation, LinearLayout.LayoutParams(-1, dp(56)))
         render()
         updateMiniPlayer()
     }
@@ -241,6 +250,21 @@ class MainActivity : AppCompatActivity() {
         handler.post(poll)
     }
 
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        if (intent.hasExtra("browse_channel")) {
+            browseChannel(intent.getLongExtra("browse_channel", 0))
+        }
+    }
+
+    private fun browseChannel(id: Long) {
+        // long: 从频道或详情进入时清除旧搜索和偏移，否则新频道可能看起来没有资源。
+        channelFilter = id; recent = false; search = ""; page = 0
+        scrollPositions[R.id.nav_videos] = 0
+        scroll.scrollTo(0, 0)
+        navigation.selectedItemId = R.id.nav_videos
+    }
+
     override fun onStop() {
         scrollPositions[destination] = scroll.scrollY
         handler.removeCallbacks(poll)
@@ -249,6 +273,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     override fun onDestroy() {
+        activeSheet?.dismiss()
         queryWorker.shutdownNow()
         handler.removeCallbacksAndMessages(null)
         super.onDestroy()
@@ -279,6 +304,7 @@ class MainActivity : AppCompatActivity() {
         videoRequest++
         channelRequest++
         searchRunnable?.let(handler::removeCallbacks)
+        activeSheet?.dismiss()
         buttons.clear()
         if (renderedDestination == destination) scrollPositions[destination] = scroll.scrollY
         pendingScrollRestore = scrollPositions[destination] ?: 0
@@ -290,13 +316,6 @@ class MainActivity : AppCompatActivity() {
         channelListContainer = null
         searchField = null
         body.removeAllViews()
-        toolbar.title = when (destination) {
-            R.id.nav_videos -> "视频库"
-            R.id.nav_channels -> "频道管理"
-            else -> "Telegram 账号"
-        }
-        toolbar.subtitle = phaseLabel(status.optString("state", "starting"))
-        refreshToolbarMenu()
         when (destination) {
             R.id.nav_videos -> videosPage()
             R.id.nav_channels -> channelsPage()
@@ -310,25 +329,6 @@ class MainActivity : AppCompatActivity() {
         pendingScrollRestore = null
         // long: 异步列表完成布局后再恢复滚动，否则空容器会把旧位置截断到页面顶部。
         scroll.post { if (!isDestroyed) scroll.scrollTo(0, offset) }
-    }
-
-    private fun refreshToolbarMenu() {
-        toolbar.menu.clear()
-        if (PlaybackService.currentKey != null) {
-            toolbar.menu.add(0, MENU_CURRENT_PLAYBACK, 0, "返回正在播放")
-                .setIcon(R.drawable.ic_play)
-                .setShowAsAction(MenuItem.SHOW_AS_ACTION_IF_ROOM)
-        }
-        if (destination == R.id.nav_account) {
-            toolbar.menu.add(0, MENU_TEST_MEDIA, 1, "播放本地测试片")
-                .setShowAsAction(MenuItem.SHOW_AS_ACTION_NEVER)
-        }
-    }
-
-    private fun onToolbarAction(item: MenuItem): Boolean = when (item.itemId) {
-        MENU_CURRENT_PLAYBACK -> { startActivity(Intent(this, PlayerActivity::class.java)); true }
-        MENU_TEST_MEDIA -> { playValidation(); true }
-        else -> false
     }
 
     private fun videosPage() {
@@ -348,40 +348,29 @@ class MainActivity : AppCompatActivity() {
             return
         }
 
-        val summary = horizontalRow().apply {
-            addView(text("正在读取视频库…", 14).apply {
-                setTextColor(color(com.google.android.material.R.attr.colorOnSurfaceVariant))
-            })
+        val searchBox = horizontalRow().apply {
+            gravity = Gravity.CENTER_VERTICAL; minimumHeight = dp(44)
+            setPadding(dp(12), 0, dp(4), 0)
+            background = rounded(color(com.google.android.material.R.attr.colorSurfaceContainerLow), 10)
         }
-        videoHeader.addView(summary, rowParams())
-        queryWorker.execute {
-            val count = app.database.count()
-            handler.post {
-                if (!isDestroyed && summary.parent != null) {
-                    summary.removeAllViews()
-                    summary.addView(text("$count 个视频", 16).apply {
-                        setTypeface(typeface, Typeface.BOLD)
-                    })
-                    summary.addView(text("${channels.length()} 个频道", 13).apply {
-                        setTextColor(color(com.google.android.material.R.attr.colorOnSurfaceVariant))
-                        gravity = Gravity.CENTER_VERTICAL
-                        setPadding(dp(12), dp(3), 0, 0)
-                    })
-                }
-            }
-        }
-
-        val searchBox = TextInputLayout(this, null, com.google.android.material.R.attr.textInputOutlinedStyle).apply {
-            hint = "搜索视频名称"
-            boxBackgroundMode = TextInputLayout.BOX_BACKGROUND_OUTLINE
-            endIconMode = TextInputLayout.END_ICON_CLEAR_TEXT
-            setBoxBackgroundColor(color(com.google.android.material.R.attr.colorSurfaceContainerLow))
+        searchBox.addView(ImageView(this).apply {
+            setImageResource(R.drawable.ic_search); imageTintList = ColorStateList.valueOf(muted())
+            importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO
+        }, LinearLayout.LayoutParams(dp(20), dp(20)))
+        val clearSearch = imageButton(R.drawable.ic_close, "清空搜索") { searchField?.text?.clear() }.apply {
+            visibility = if (search.isEmpty()) View.GONE else View.VISIBLE
         }
         val searchInput = TextInputEditText(searchBox.context).apply {
             inputType = InputType.TYPE_CLASS_TEXT
             imeOptions = EditorInfo.IME_ACTION_SEARCH
             setSingleLine(true)
-            minHeight = dp(52)
+            hint = "搜索视频名称"
+            contentDescription = "搜索视频名称"
+            setTextSize(android.util.TypedValue.COMPLEX_UNIT_SP, 13f)
+            minHeight = dp(44)
+            // long: 搜索没有浮动标签，使用普通内边距，避免大字体沿用表单标签预留高度而裁切文字。
+            background = null; gravity = Gravity.CENTER_VERTICAL; includeFontPadding = false
+            setPadding(dp(10), dp(4), dp(4), dp(4)); setHintTextColor(muted())
             setText(search)
             setOnEditorActionListener { _, action, _ ->
                 if (action == EditorInfo.IME_ACTION_SEARCH) {
@@ -398,6 +387,7 @@ class MainActivity : AppCompatActivity() {
                 override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) = Unit
                 override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {
                     search = s?.toString()?.trim().orEmpty()
+                    clearSearch.visibility = if (s.isNullOrEmpty()) View.GONE else View.VISIBLE
                     page = 0
                     // long: 搜索结果是新查询；从旧列表偏移继续会让结果看似缺失。
                     pendingScrollRestore = 0
@@ -409,7 +399,8 @@ class MainActivity : AppCompatActivity() {
             })
         }
         searchField = searchInput
-        searchBox.addView(searchInput, LinearLayout.LayoutParams(-1, -2))
+        searchBox.addView(searchInput, LinearLayout.LayoutParams(0, -2, 1f))
+        searchBox.addView(clearSearch, LinearLayout.LayoutParams(dp(44), dp(44)))
         videoHeader.addView(searchBox, rowParams())
 
         val channelsById = buildMap<Long, String> {
@@ -418,7 +409,7 @@ class MainActivity : AppCompatActivity() {
                 put(channel.getLong("channel_id"), channel.optString("title", "Telegram 频道"))
             }
         }
-        val filters = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        val filters = horizontalRow().apply { gravity = Gravity.CENTER_VERTICAL }
         val channelTitle = channelsById[channelFilter] ?: "全部频道"
         channelFilterButton = actionButton(
             label = channelTitle,
@@ -426,7 +417,7 @@ class MainActivity : AppCompatActivity() {
             icon = R.drawable.ic_filter,
             action = { chooseVideoChannel(channels) }
         ).apply { maxLines = 1; ellipsize = android.text.TextUtils.TruncateAt.END; gravity = Gravity.CENTER_VERTICAL }
-        filters.addView(channelFilterButton, LinearLayout.LayoutParams(-1, dp(48)))
+
 
         val mode = MaterialButtonToggleGroup(this).apply {
             isSingleSelection = true
@@ -434,7 +425,7 @@ class MainActivity : AppCompatActivity() {
         }
         val allId = View.generateViewId()
         val recentId = View.generateViewId()
-        mode.addView(segmentButton("全部", allId), LinearLayout.LayoutParams(0, dp(44), 1f))
+        mode.addView(segmentButton("全部视频", allId), LinearLayout.LayoutParams(0, dp(44), 1f))
         mode.addView(segmentButton("最近播放", recentId), LinearLayout.LayoutParams(0, dp(44), 1f))
         mode.check(if (recent) recentId else allId)
         mode.addOnButtonCheckedListener { _, checkedId, checked ->
@@ -445,8 +436,10 @@ class MainActivity : AppCompatActivity() {
                 showVideos()
             }
         }
-        filters.addView(mode, LinearLayout.LayoutParams(-1, dp(44)).apply { topMargin = dp(4) })
-        videoHeader.addView(filters, rowParams(bottom = 8))
+        filters.addView(mode, LinearLayout.LayoutParams(0, dp(44), 1f))
+        filters.addView(channelFilterButton, LinearLayout.LayoutParams(dp(124), dp(44)))
+        videoHeader.addView(filters, rowParams(bottom = 0))
+        videoHeader.addView(divider())
 
         videosContainer = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         body.addView(videosContainer)
@@ -496,8 +489,10 @@ class MainActivity : AppCompatActivity() {
         val offset = page * PAGE_SIZE
         val selectedChannel = channelFilter
         val playbackOnly = recent
+        val order = sort
         queryWorker.execute {
-            val rows = runCatching { app.database.videos(query, offset, PAGE_SIZE + 1, selectedChannel, playbackOnly) }
+            val rows = runCatching { app.database.videos(query, offset, PAGE_SIZE + 1, selectedChannel, playbackOnly, order) }
+            val continuing = if (query.isEmpty() && selectedChannel == 0L && !playbackOnly && offset == 0) runCatching { app.database.continueWatching() }.getOrDefault(JSONArray()) else JSONArray()
             handler.post {
                 if (isDestroyed || request != videoRequest || videosContainer !== target) return@post
                 target.removeAllViews()
@@ -508,6 +503,14 @@ class MainActivity : AppCompatActivity() {
                     })
                     return@post
                 }
+                if (continuing.length() > 0) {
+                    target.addView(sectionHeader("继续观看"))
+                    for (i in 0 until continuing.length()) target.addView(videoRow(continuing.getJSONObject(i), names, true))
+                }
+                val heading = horizontalRow().apply { gravity = Gravity.CENTER_VERTICAL; setPadding(0, dp(8), 0, dp(2)) }
+                heading.addView(text(if (query.isNotEmpty()) "搜索结果" else if (playbackOnly) "最近播放" else "视频列表", 14).apply { setTypeface(typeface, Typeface.BOLD) }, LinearLayout.LayoutParams(0, -2, 1f))
+                heading.addView(imageButton(R.drawable.ic_sort, "视频排序") { showSortPicker() }, LinearLayout.LayoutParams(dp(40), dp(40)))
+                target.addView(heading)
                 if (result.length() == 0) {
                     val message = if (playbackOnly) "还没有播放记录" else "没有找到匹配的视频"
                     target.addView(emptyInline(message, if (query.isNotEmpty()) "清除搜索条件" else "管理频道") {
@@ -542,104 +545,102 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    private fun videoRow(item: JSONObject, channelNames: Map<Long, String>): View {
-        val key = item.optString("key")
+    private fun videoRow(item: JSONObject, channelNames: Map<Long, String>, resume: Boolean = false): View {
         val title = item.optString("name", "未命名视频")
         val channel = channelNames[item.optLong("channel_id")] ?: "Telegram 频道"
-        val size = formatSize(item.optLong("size"))
-        val row = horizontalRow().apply { setPadding(0, dp(11), 0, dp(11)) }
-        row.apply {
-            val ripple = android.util.TypedValue()
-            theme.resolveAttribute(android.R.attr.selectableItemBackground, ripple, true)
-            setBackgroundResource(ripple.resourceId)
-            isClickable = true
-            isFocusable = true
-            contentDescription = "播放：$title，$channel，$size"
-            setOnClickListener {
-                if (app.engine?.let { JSONObject(it.status()).optBoolean("connected") } != true) {
-                    message("先连接 Telegram，再播放视频")
-                    return@setOnClickListener
-                }
-                startActivity(Intent(this@MainActivity, PlayerActivity::class.java)
-                    .putExtra("key", key).putExtra("title", title))
-            }
-        }
-        val mark = FrameLayout(this).apply {
-            background = GradientDrawable().apply {
-                shape = GradientDrawable.RECTANGLE
-                cornerRadius = dp(9).toFloat()
-                setColor(color(com.google.android.material.R.attr.colorSurfaceContainerLow))
-            }
-            addView(ImageView(this@MainActivity).apply {
-                setImageResource(R.drawable.ic_movie)
-                imageTintList = ColorStateList.valueOf(color(com.google.android.material.R.attr.colorPrimary))
-                contentDescription = null
-            }, FrameLayout.LayoutParams(dp(28), dp(28), Gravity.CENTER))
-        }
-        row.addView(mark, LinearLayout.LayoutParams(dp(52), dp(52)).apply { marginEnd = dp(14) })
-        val copy = LinearLayout(this).apply {
+        val published = MediaPresentation.published(item.optLong("date"))
+        val row = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            gravity = Gravity.CENTER_VERTICAL
-            minimumHeight = dp(52)
+            minimumHeight = dp(55)
+            setPadding(0, dp(7), 0, dp(7))
+            clickableRow(this) {
+                if (resume) playVideo(item) else startActivity(Intent(this@MainActivity, VideoDetailActivity::class.java).putExtra("key", item.getString("key")))
+            }
+            contentDescription = "${if (resume) "继续观看" else "查看视频"}：$title，$channel" + if (published.isNotEmpty()) "，发布于 $published" else ""
         }
-        copy.addView(text(title, 15).apply {
-            setTextAppearance(com.google.android.material.R.style.TextAppearance_Material3_TitleSmall)
-            maxLines = 2
-            ellipsize = android.text.TextUtils.TruncateAt.END
-        })
-        val meta = horizontalRow().apply {
-            gravity = Gravity.CENTER_VERTICAL
-            setPadding(0, dp(5), 0, 0)
-        }
-        meta.addView(text(channel, 12).apply {
-            setTextColor(color(com.google.android.material.R.attr.colorOnSurfaceVariant))
-            maxLines = 1
-            ellipsize = android.text.TextUtils.TruncateAt.END
-        }, LinearLayout.LayoutParams(0, -2, 1f))
-        meta.addView(text(size, 12).apply {
-            setTextColor(color(com.google.android.material.R.attr.colorOnSurfaceVariant))
-            gravity = Gravity.END
+        row.addView(text(title, 13).apply {
             typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
+            maxLines = 2; ellipsize = android.text.TextUtils.TruncateAt.END
         })
-        copy.addView(meta)
-        row.addView(copy, LinearLayout.LayoutParams(0, -2, 1f))
-        val item = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
-        item.addView(row, LinearLayout.LayoutParams(-1, -2))
-        item.addView(View(this).apply {
-            setBackgroundColor(color(com.google.android.material.R.attr.colorOutlineVariant))
-        }, LinearLayout.LayoutParams(-1, dp(1)).apply { marginStart = dp(64) })
-        return item.apply {
-            layoutParams = LinearLayout.LayoutParams(-1, -2)
+        val meta = horizontalRow().apply { gravity = Gravity.CENTER_VERTICAL; setPadding(0, dp(4), 0, 0) }
+        meta.addView(text(channel, 11).apply { setTextColor(muted()); maxLines = 1; ellipsize = android.text.TextUtils.TruncateAt.END }, LinearLayout.LayoutParams(0, -2, 1f))
+        val dateLabel = if (resume) "看到 ${MediaPresentation.position(item.optLong("position"))}" else published
+        if (dateLabel.isNotEmpty()) meta.addView(text(dateLabel, 11).apply {
+            setTextColor(muted()); setPadding(dp(8), 0, 0, 0)
+            contentDescription = if (resume) dateLabel else "发布时间 $published"
+        })
+        if (!resume) meta.addView(text(formatSize(item.optLong("size")), 11).apply { setTextColor(muted()); setPadding(dp(10), 0, 0, 0) })
+        row.addView(meta)
+        return LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL; addView(row, LinearLayout.LayoutParams(-1, -2)); addView(divider())
+        }
+    }
+
+    private fun playVideo(item: JSONObject) {
+        if (app.engine?.let { JSONObject(it.status()).optBoolean("connected") } != true) { message("先连接 Telegram，再播放视频"); return }
+        startActivity(Intent(this, PlayerActivity::class.java).putExtra("key", item.getString("key")).putExtra("title", item.optString("name")))
+    }
+
+    private fun showSortPicker() {
+        val values = arrayOf("newest", "oldest", "name")
+        val options = arrayOf("发布时间：从新到旧", "发布时间：从旧到新", "名称")
+        val sheet = sheet("视频排序")
+        options.forEachIndexed { index, label ->
+            sheet.addView(settingRow(label, if (sort == values[index]) "已选" else "", R.drawable.ic_sort) {
+                sort = values[index]
+                getSharedPreferences("library", MODE_PRIVATE).edit().putString("sort", sort).apply()
+                activeSheet?.dismiss(); page = 0; pendingScrollRestore = 0; showVideos()
+            })
         }
     }
 
     private fun channelsPage() {
-        paragraph("选择已加入的 Telegram 频道，或添加公开频道链接。")
-        body.addView(actionButton("从 Telegram 选择", ButtonStyle.FILLED, R.drawable.ic_channels) { chooseChannelsFromTelegram() }, rowParams())
-
-        val addRow = horizontalRow().apply { gravity = Gravity.CENTER_VERTICAL }
-        val (box, reference) = createInput("频道链接 / 用户名 / ID", InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_URI).also {
-            it.second.imeOptions = EditorInfo.IME_ACTION_DONE
-        }
-        reference.setText(channelDraft)
-        reference.trackText { channelDraft = it }
-        addRow.addView(box, LinearLayout.LayoutParams(0, -2, 1f).apply { marginEnd = dp(8) })
-        addRow.addView(actionButton("添加", ButtonStyle.TONAL, R.drawable.ic_add) {
-            val ref = reference.text.toString().trim()
-            if (ref.isEmpty()) { reference.error = "输入频道链接、用户名或 ID"; return@actionButton }
-            setActionsEnabled(false)
-            app.perform({ core -> core.findChannel(ref).also { app.database.addChannel(JSONObject(it)) } }) { _, error ->
-                if (isDestroyed) return@perform
-                if (error != null) { setActionsEnabled(true); message(error) }
-                else { channelDraft = ""; message("频道已加入"); render() }
-            }
-        }, LinearLayout.LayoutParams(dp(90), dp(54)))
-        body.addView(addRow, rowParams())
-
+        val bar = horizontalRow().apply { gravity = Gravity.CENTER_VERTICAL }
+        bar.addView(text("${app.database.channels().length()} 个频道 / ${app.database.count()} 个视频", 11).apply { setTextColor(muted()) }, LinearLayout.LayoutParams(0, -2, 1f))
+        bar.addView(imageButton(R.drawable.ic_sync, "选择频道同步") { chooseSyncChannel() }, LinearLayout.LayoutParams(dp(40), dp(44)))
+        bar.addView(actionButton("添加频道", ButtonStyle.TEXT, R.drawable.ic_add) { showAddChannel() }.apply { textSize = 12f; iconSize = dp(17) }, LinearLayout.LayoutParams(-2, dp(44)))
+        body.addView(bar)
         val listHost = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         channelListContainer = listHost
         body.addView(listHost)
         loadChannels(listHost)
+        body.addView(text("频道视频只保存在本机索引中。移除频道不会退出 Telegram 频道。", 11).apply {
+            setTextColor(muted()); setPadding(0, dp(16), 0, 0)
+        })
+    }
+
+    private fun showAddChannel() {
+        val content = sheet("添加频道")
+        content.addView(actionButton("从 Telegram 选择", ButtonStyle.TONAL, R.drawable.ic_channels) {
+            activeSheet?.dismiss(); chooseChannelsFromTelegram()
+        }, rowParams())
+        val (box, reference) = createInput("频道链接 / 用户名 / ID", InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_URI)
+        reference.setText(channelDraft)
+        reference.trackText { channelDraft = it }
+        content.addView(box, rowParams(top = 12))
+        content.addView(actionButton("添加", ButtonStyle.FILLED, R.drawable.ic_add) {
+            val ref = reference.text.toString().trim()
+            if (ref.isEmpty()) { reference.error = "输入频道链接、用户名或 ID"; return@actionButton }
+            setActionsEnabled(false)
+            app.perform({ core -> core.findChannel(ref).also { app.database.addChannel(JSONObject(it)) } }) { _, error ->
+                if (!isDestroyed) {
+                    if (error != null) { setActionsEnabled(true); box.error = error }
+                    else { channelDraft = ""; activeSheet?.dismiss(); message("频道已加入"); render() }
+                }
+            }
+        }, rowParams(top = 10))
+    }
+
+    private fun chooseSyncChannel() {
+        val channels = app.database.channels()
+        if (channels.length() == 0) { showAddChannel(); return }
+        val content = sheet("同步频道")
+        for (i in 0 until channels.length()) {
+            val ch = channels.getJSONObject(i)
+            content.addView(settingRow(ch.optString("title"), "", R.drawable.ic_sync) {
+                activeSheet?.dismiss(); beginScan(ch.getLong("channel_id"), true)
+            })
+        }
     }
 
     private fun scanPanel(): MaterialCardView {
@@ -648,12 +649,12 @@ class MainActivity : AppCompatActivity() {
             cardElevation = 0f
             strokeWidth = 0
             setCardBackgroundColor(color(com.google.android.material.R.attr.colorSecondaryContainer))
-            visibility = if (app.scanning || app.scanMessage != "索引任务等待开始") View.VISIBLE else View.GONE
+            visibility = if (app.scanning) View.VISIBLE else View.GONE
         }
-        val content = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(14), dp(12), dp(14), dp(10)) }
+        val content = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(12), dp(3), dp(4), dp(3)) }
         val row = horizontalRow().apply { gravity = Gravity.CENTER_VERTICAL }
         val labels = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
-        scanStatus = text(app.scanMessage, 14).apply {
+        scanStatus = text(app.scanMessage, 12).apply {
             typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
             setTextColor(color(com.google.android.material.R.attr.colorOnSecondaryContainer))
         }
@@ -701,82 +702,27 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun renderChannelCards(host: LinearLayout, channels: JSONArray, counts: Map<Long, Long>) {
-        if (channels.length() == 0) {
-            host.addView(emptyInline("还没有添加频道", "从 Telegram 选择") { chooseChannelsFromTelegram() })
-            return
-        }
-        host.addView(text("已加入 ${channels.length()} 个频道", 13).apply {
-            setTextColor(color(com.google.android.material.R.attr.colorOnSurfaceVariant))
-            setPadding(0, dp(6), 0, dp(8))
-        })
+        if (channels.length() == 0) { host.addView(emptyInline("还没有添加频道", "从 Telegram 选择") { chooseChannelsFromTelegram() }); return }
         for (index in 0 until channels.length()) {
             val channel = channels.getJSONObject(index)
             val id = channel.getLong("channel_id")
-            val historyDone = channel.optBoolean("history_done")
-            val refreshPending = channel.optLong("refresh_offset") > 0
-            val content = LinearLayout(this).apply {
-                orientation = LinearLayout.VERTICAL
-                setPadding(0, dp(10), 0, dp(10))
+            val title = channel.optString("title", "Telegram 频道")
+            val row = horizontalRow().apply { gravity = Gravity.CENTER_VERTICAL; minimumHeight = dp(52); setPadding(0, dp(3), 0, dp(3)) }
+            row.addView(text(title.take(1), 13).apply {
+                gravity = Gravity.CENTER
+                setTextColor(color(com.google.android.material.R.attr.colorPrimary))
+                background = rounded(color(com.google.android.material.R.attr.colorPrimaryContainer), 9)
+            }, LinearLayout.LayoutParams(dp(30), dp(30)).apply { marginEnd = dp(10) })
+            val copy = LinearLayout(this).apply {
+                orientation = LinearLayout.VERTICAL; gravity = Gravity.CENTER_VERTICAL; minimumHeight = dp(44)
+                clickableRow(this) { browseChannel(id) }
             }
-            val titleRow = horizontalRow().apply { gravity = Gravity.CENTER_VERTICAL }
-            val title = text(channel.optString("title", "Telegram 频道"), 16).apply {
-                typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
-                maxLines = 2
-                ellipsize = android.text.TextUtils.TruncateAt.END
-            }
-            titleRow.addView(title, LinearLayout.LayoutParams(0, -2, 1f))
-            titleRow.addView(imageButton(R.drawable.ic_more, "${channel.optString("title")} 更多操作") {
-                channelMenu(itAnchor = it, channel = channel)
-            }, LinearLayout.LayoutParams(dp(48), dp(48)))
-            content.addView(titleRow)
-
-            val metadata = LinearLayout(this).apply {
-                orientation = LinearLayout.HORIZONTAL
-                gravity = Gravity.CENTER_VERTICAL
-                setPadding(0, 0, 0, dp(9))
-            }
-            metadata.addView(text("${counts[id] ?: 0} 个视频", 12).apply {
-                setTextColor(color(com.google.android.material.R.attr.colorOnSurfaceVariant))
-            })
-            val stateText = when {
-                refreshPending -> "新增同步可续"
-                historyDone -> "历史已完成"
-                channel.optLong("history_offset") > 0L -> "历史可续扫"
-                else -> "尚未扫描"
-            }
-            metadata.addView(text(stateText, 12).apply {
-                setTextColor(color(if (historyDone) com.google.android.material.R.attr.colorSecondary else com.google.android.material.R.attr.colorOnSurfaceVariant))
-                gravity = Gravity.END
-                setPadding(dp(12), 0, 0, 0)
-            })
-            content.addView(metadata)
-            val updated = channel.optLong("updated")
-            if (updated > 0L) content.addView(text("最近扫描 ${android.text.format.DateUtils.getRelativeTimeSpanString(updated)}", 12).apply {
-                setTextColor(color(com.google.android.material.R.attr.colorOnSurfaceVariant))
-                setPadding(0, dp(4), 0, dp(10))
-            })
-
-            val actions = horizontalRow().apply { gravity = Gravity.CENTER_VERTICAL }
-            actions.addView(actionButton(if (refreshPending) "继续同步" else "检查新增", ButtonStyle.TONAL, R.drawable.ic_sync) {
-                beginScan(id, true)
-            }, LinearLayout.LayoutParams(0, -2, 1f).apply { marginEnd = dp(8) })
-            if (!historyDone) actions.addView(actionButton(if (channel.optLong("history_offset") > 0L) "继续历史" else "扫描历史", ButtonStyle.TEXT, R.drawable.ic_history) {
-                beginScan(id, false)
-            }, LinearLayout.LayoutParams(0, -2, 1f))
-            content.addView(actions)
-            content.isClickable = true
-            content.isFocusable = true
-            content.contentDescription = "${channel.optString("title")}，${counts[id] ?: 0} 个视频"
-            content.setOnClickListener {
-                channelFilter = id
-                recent = false
-                page = 0
-                navigation.selectedItemId = R.id.nav_videos
-            }
-            host.addView(content, LinearLayout.LayoutParams(-1, -2))
-            host.addView(View(this).apply {
-                setBackgroundColor(color(com.google.android.material.R.attr.colorOutlineVariant))
-            }, LinearLayout.LayoutParams(-1, dp(1)))
+            copy.addView(text(title, 13).apply { maxLines = 1; ellipsize = android.text.TextUtils.TruncateAt.END; setTypeface(typeface, Typeface.BOLD) })
+            val stateLabel = when { app.scanning -> ""; channel.optLong("refresh_offset") > 0 -> "新增可续"; channel.optBoolean("history_done") -> "历史完成"; channel.optLong("history_offset") > 0 -> "历史可续"; else -> "尚未扫描" }
+            copy.addView(text("${counts[id] ?: 0} 个视频   $stateLabel", 11).apply { setTextColor(muted()); setPadding(0, dp(3), 0, 0) })
+            row.addView(copy, LinearLayout.LayoutParams(0, -2, 1f))
+            row.addView(imageButton(R.drawable.ic_more, "$title 更多操作") { channelMenu(it, channel) }, LinearLayout.LayoutParams(dp(40), dp(44)))
+            host.addView(row); host.addView(divider())
         }
     }
 
@@ -785,9 +731,10 @@ class MainActivity : AppCompatActivity() {
         if (app.busy) { message("当前操作完成后再试"); return }
         PopupMenu(this, itAnchor).apply {
             menu.add("浏览视频").setOnMenuItemClickListener {
-                channelFilter = id; recent = false; page = 0; navigation.selectedItemId = R.id.nav_videos; true
+                browseChannel(id); true
             }
-            if (!channel.optBoolean("history_done")) menu.add("扫描历史").setOnMenuItemClickListener { beginScan(id, false); true }
+            menu.add(if (channel.optLong("refresh_offset") > 0) "继续同步新增" else "检查新增").setOnMenuItemClickListener { beginScan(id, true); true }
+            if (!channel.optBoolean("history_done")) menu.add(if (channel.optLong("history_offset") > 0) "继续扫描历史" else "扫描历史").setOnMenuItemClickListener { beginScan(id, false); true }
             menu.add("移除频道").setOnMenuItemClickListener {
                 confirmRemoveChannel(channel)
                 true
@@ -874,30 +821,19 @@ class MainActivity : AppCompatActivity() {
 
     private fun connectedAccountPage(phase: String) {
         val connected = phase == "ready"
-        val panel = MaterialCardView(this).apply {
-            radius = dp(14).toFloat()
-            cardElevation = 0f
-            strokeWidth = 0
-            setCardBackgroundColor(color(if (connected) com.google.android.material.R.attr.colorSecondaryContainer else com.google.android.material.R.attr.colorSurfaceContainerLow))
-        }
-        val content = horizontalRow().apply { gravity = Gravity.CENTER_VERTICAL; setPadding(dp(16), dp(16), dp(16), dp(16)) }
-        content.addView(ImageView(this).apply {
-            setImageResource(if (connected) R.drawable.ic_check else R.drawable.ic_sync)
-            imageTintList = ColorStateList.valueOf(color(if (connected) com.google.android.material.R.attr.colorOnSecondaryContainer else com.google.android.material.R.attr.colorPrimary))
-            contentDescription = null
-        }, LinearLayout.LayoutParams(dp(28), dp(28)).apply { marginEnd = dp(14) })
-        val copy = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
-        copy.addView(text(if (connected) "Telegram 已连接" else phaseLabel(phase), 16).apply {
-            typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
-            setTextColor(color(if (connected) com.google.android.material.R.attr.colorOnSecondaryContainer else com.google.android.material.R.attr.colorOnSurface))
-        })
-        copy.addView(text(when { connected -> "频道与播放已就绪"; phase == "expired" -> "重新登录原账号，保留本机视频库"; else -> "网络恢复后会自动重连" }, 13).apply {
-            setTextColor(color(if (connected) com.google.android.material.R.attr.colorOnSecondaryContainer else com.google.android.material.R.attr.colorOnSurfaceVariant))
-            setPadding(0, dp(3), 0, 0)
-        })
-        content.addView(copy, LinearLayout.LayoutParams(0, -2, 1f))
-        panel.addView(content)
-        body.addView(panel, rowParams(bottom = 12))
+        val profile = horizontalRow().apply { gravity = Gravity.CENTER_VERTICAL; setPadding(0, dp(4), 0, dp(16)) }
+        profile.addView(ImageView(this).apply {
+            setImageResource(R.drawable.ic_account); setPadding(dp(9), dp(9), dp(9), dp(9))
+            imageTintList = ColorStateList.valueOf(color(com.google.android.material.R.attr.colorPrimary))
+            background = rounded(color(com.google.android.material.R.attr.colorPrimaryContainer), 20)
+        }, LinearLayout.LayoutParams(dp(38), dp(38)).apply { marginEnd = dp(11) })
+        profile.addView(LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            addView(text("Telegram", 16).apply { setTypeface(typeface, Typeface.BOLD) })
+            addView(text(phaseLabel(phase), 11).apply { setTextColor(muted()); setPadding(0, dp(3), 0, 0) })
+        }, LinearLayout.LayoutParams(0, -2, 1f))
+        profile.addView(text(if (connected) "已授权" else "", 11).apply { setTextColor(color(com.google.android.material.R.attr.colorSecondary)) })
+        body.addView(profile)
         if (phase == "expired") {
             body.addView(actionButton("重新授权", ButtonStyle.FILLED, R.drawable.ic_refresh) {
                 MaterialAlertDialogBuilder(this).setTitle("重新授权原账号")
@@ -915,54 +851,82 @@ class MainActivity : AppCompatActivity() {
                     }.show()
             }, rowParams())
         }
-        actionButton("管理频道", ButtonStyle.FILLED, R.drawable.ic_channels) {
-            navigation.selectedItemId = R.id.nav_channels
-        }.also { body.addView(it, rowParams()) }
-        actionButton("退出此设备", ButtonStyle.TEXT, R.drawable.ic_logout) { confirmLogout() }
-            .apply { setTextColor(color(com.google.android.material.R.attr.colorError)); iconTint = ColorStateList.valueOf(currentTextColor) }
-            .also { body.addView(it, rowParams()) }
     }
 
     private fun appearanceSettings() {
-        val section = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            setPadding(0, dp(26), 0, 0)
-        }
-        section.addView(text("偏好设置", 14).apply {
-            setTextColor(color(com.google.android.material.R.attr.colorOnSurfaceVariant))
-            ViewCompat.setAccessibilityHeading(this, true)
-        })
+        body.addView(sectionHeader("播放与显示"))
         val modes = intArrayOf(AppCompatDelegate.MODE_NIGHT_FOLLOW_SYSTEM, AppCompatDelegate.MODE_NIGHT_NO, AppCompatDelegate.MODE_NIGHT_YES)
         val labels = arrayOf("跟随系统", "浅色", "深色")
         val current = getSharedPreferences("appearance", MODE_PRIVATE).getInt("theme", modes[0])
         val choice = modes.indexOf(current).coerceAtLeast(0)
-        val row = horizontalRow().apply {
-            gravity = Gravity.CENTER_VERTICAL
-            minimumHeight = dp(64)
-            isClickable = true; isFocusable = true
-            contentDescription = "外观，${labels[choice]}"
-            val ripple = android.util.TypedValue()
-            theme.resolveAttribute(android.R.attr.selectableItemBackground, ripple, true)
-            setBackgroundResource(ripple.resourceId)
-            setOnClickListener {
-                MaterialAlertDialogBuilder(this@MainActivity).setTitle("外观")
-                    .setSingleChoiceItems(labels, choice) { dialog, index ->
-                        getSharedPreferences("appearance", MODE_PRIVATE).edit().putInt("theme", modes[index]).apply()
-                        dialog.dismiss()
-                        AppCompatDelegate.setDefaultNightMode(modes[index])
-                    }.setNegativeButton("取消", null).show()
-            }
-        }
-        row.addView(text("外观", 16), LinearLayout.LayoutParams(0, -2, 1f))
-        row.addView(text(labels[choice], 14).apply { setTextColor(color(com.google.android.material.R.attr.colorOnSurfaceVariant)) })
-        row.addView(ImageView(this).apply { setImageResource(R.drawable.ic_chevron_right); imageTintList = ColorStateList.valueOf(color(com.google.android.material.R.attr.colorOnSurfaceVariant)) },
-            LinearLayout.LayoutParams(dp(24), dp(24)).apply { marginStart = dp(12) })
-        section.addView(row)
-        section.addView(text("TGProxy ${BuildConfig.VERSION_NAME}", 12).apply {
-            setTextColor(color(com.google.android.material.R.attr.colorOnSurfaceVariant))
-            setPadding(0, dp(16), 0, dp(4))
+        body.addView(settingRow("外观", labels[choice], R.drawable.ic_appearance) {
+            MaterialAlertDialogBuilder(this).setTitle("外观").setSingleChoiceItems(labels, choice) { dialog, index ->
+                getSharedPreferences("appearance", MODE_PRIVATE).edit().putInt("theme", modes[index]).apply()
+                dialog.dismiss(); AppCompatDelegate.setDefaultNightMode(modes[index])
+            }.show()
         })
-        body.addView(section)
+        val preferences = PlaybackPreferences(this)
+        body.addView(settingRow("默认播放速度", "${preferences.speed}×", R.drawable.ic_speed) {
+            val speeds = floatArrayOf(.5f, .75f, 1f, 1.25f, 1.5f, 1.75f, 2f)
+            MaterialAlertDialogBuilder(this).setTitle("默认播放速度").setSingleChoiceItems(speeds.map { "${it}×" }.toTypedArray(), speeds.indexOfFirst { it == preferences.speed }) { dialog, i ->
+                preferences.speed = speeds[i]
+                PlaybackService.setPreferredSpeed(speeds[i])
+                dialog.dismiss(); render()
+            }.show()
+        })
+        body.addView(settingRow("播放手势", "操作说明", R.drawable.ic_info) {
+            MaterialAlertDialogBuilder(this).setTitle("播放手势").setMessage(dev.longvideo.controls.R.string.pc_help_text).setPositiveButton("知道了", null).show()
+        })
+        body.addView(sectionHeader("账号与数据"))
+        body.addView(settingRow("管理频道", "${app.database.channels().length()} 个", R.drawable.ic_channels) { navigation.selectedItemId = R.id.nav_channels })
+        body.addView(settingRow("本机索引", "${app.database.count()} 个视频", R.drawable.ic_video) {
+            MaterialAlertDialogBuilder(this).setTitle("本机索引").setMessage("索引和播放记录保存在此设备。视频在播放时按需读取，不会自动下载完整视频。\n\n列表日期是 Telegram 消息发布时间，按设备时区显示。").setPositiveButton("关闭", null).show()
+        })
+        body.addView(settingRow("播放诊断", "本地测试片", R.drawable.ic_play) { playValidation() })
+        if (status.optString("state") in AUTHENTICATED_PHASES) body.addView(settingRow("退出此设备", "", R.drawable.ic_logout) { confirmLogout() })
+        body.addView(text("TGProxy ${BuildConfig.VERSION_NAME}", 11).apply { setTextColor(muted()); gravity = Gravity.CENTER; setPadding(0, dp(22), 0, dp(8)) })
+    }
+
+    private fun muted() = color(com.google.android.material.R.attr.colorOnSurfaceVariant)
+    private fun divider() = View(this).apply {
+        setBackgroundColor(color(com.google.android.material.R.attr.colorOutlineVariant))
+        layoutParams = LinearLayout.LayoutParams(-1, dp(1))
+    }
+    private fun rounded(value: Int, radius: Int) = GradientDrawable().apply { setColor(value); cornerRadius = dp(radius).toFloat() }
+    private fun clickableRow(view: View, action: () -> Unit) {
+        val ripple = android.util.TypedValue(); theme.resolveAttribute(android.R.attr.selectableItemBackground, ripple, true)
+        view.setBackgroundResource(ripple.resourceId); view.isClickable = true; view.isFocusable = true
+        view.setOnClickListener { action() }
+    }
+    private fun sectionHeader(label: String) = text(label, 12).apply {
+        setTextColor(muted()); setPadding(0, dp(17), 0, dp(5)); ViewCompat.setAccessibilityHeading(this, true)
+    }
+    private fun settingRow(label: String, value: String, icon: Int, action: () -> Unit): View = LinearLayout(this).apply {
+        orientation = LinearLayout.VERTICAL
+        val row = horizontalRow().apply {
+            gravity = Gravity.CENTER_VERTICAL; minimumHeight = dp(48)
+            contentDescription = "$label，$value"
+            clickableRow(this, action)
+            addView(ImageView(this@MainActivity).apply { setImageResource(icon); imageTintList = ColorStateList.valueOf(muted()) }, LinearLayout.LayoutParams(dp(18), dp(18)).apply { marginEnd = dp(10) })
+            addView(text(label, 13).apply { maxLines = 2 }, LinearLayout.LayoutParams(0, -2, 1f))
+            addView(text(value, 11).apply { setTextColor(muted()); setPadding(dp(6), 0, dp(5), 0) })
+            addView(ImageView(this@MainActivity).apply { setImageResource(R.drawable.ic_chevron_right); imageTintList = ColorStateList.valueOf(muted()) }, LinearLayout.LayoutParams(dp(14), dp(14)))
+        }
+        addView(row); addView(divider())
+    }
+    private fun sheet(title: String): LinearLayout {
+        activeSheet?.dismiss()
+        val content = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(20), dp(10), dp(20), dp(24)) }
+        val header = horizontalRow().apply { gravity = Gravity.CENTER_VERTICAL }
+        header.addView(text(title, 18).apply { setTypeface(typeface, Typeface.BOLD) }, LinearLayout.LayoutParams(0, -2, 1f))
+        header.addView(imageButton(R.drawable.ic_close, "关闭面板") { activeSheet?.dismiss() }, LinearLayout.LayoutParams(dp(48), dp(48)))
+        content.addView(header)
+        val dialog = BottomSheetDialog(this)
+        dialog.setContentView(ScrollView(this).apply { addView(content) })
+        dialog.setOnDismissListener { if (activeSheet === dialog) { activeSheet = null; activeSheetContent = null } }
+        activeSheet = dialog; activeSheetContent = content; dialog.show()
+        dialog.behavior.state = com.google.android.material.bottomsheet.BottomSheetBehavior.STATE_EXPANDED
+        return content
     }
 
     private fun loginPage(phase: String) {
@@ -1168,13 +1132,6 @@ class MainActivity : AppCompatActivity() {
         return block
     }
 
-    private fun heading(value: String) {
-        body.addView(text(value, 22).apply {
-            setTextAppearance(com.google.android.material.R.style.TextAppearance_Material3_TitleLarge)
-            ViewCompat.setAccessibilityHeading(this, true)
-        }, rowParams(bottom = 6))
-    }
-
     private fun paragraph(value: String): TextView = text(value, 14).apply {
         setTextAppearance(com.google.android.material.R.style.TextAppearance_Material3_BodyMedium)
         setTextColor(color(com.google.android.material.R.attr.colorOnSurfaceVariant))
@@ -1256,7 +1213,11 @@ class MainActivity : AppCompatActivity() {
         minimumWidth = 0
         minWidth = 0
         setPadding(dp(8), paddingTop, dp(8), paddingBottom)
-        minHeight = dp(48)
+        minHeight = dp(44)
+        strokeWidth = 0
+        cornerRadius = dp(8)
+        backgroundTintList = ColorStateList(arrayOf(intArrayOf(android.R.attr.state_checked), intArrayOf()), intArrayOf(color(com.google.android.material.R.attr.colorPrimaryContainer), android.graphics.Color.TRANSPARENT))
+        setTextColor(ColorStateList(arrayOf(intArrayOf(android.R.attr.state_checked), intArrayOf()), intArrayOf(color(com.google.android.material.R.attr.colorPrimary), muted())))
         insetTop = 0
         insetBottom = 0
         setTextSize(android.util.TypedValue.COMPLEX_UNIT_SP, 13f)
@@ -1319,28 +1280,22 @@ class MainActivity : AppCompatActivity() {
 
     private fun updateMiniPlayer() {
         lastPlayingKey = PlaybackService.currentKey
+        lastPlaying = PlaybackService.isPlaybackRequested()
         miniPlayer.removeAllViews()
-        refreshToolbarMenu()
         val key = lastPlayingKey ?: return
-        val caption = text("返回正在播放", 14).apply {
-            maxLines = 1; ellipsize = android.text.TextUtils.TruncateAt.END
-            setPadding(dp(14), 0, dp(6), 0)
-        }
-        val row = horizontalRow().apply {
-            minimumHeight = dp(56); gravity = Gravity.CENTER_VERTICAL
-            setBackgroundColor(color(com.google.android.material.R.attr.colorPrimaryContainer))
-            isClickable = true; isFocusable = true
-            contentDescription = "返回正在播放"
-            setOnClickListener { startActivity(Intent(this@MainActivity, PlayerActivity::class.java)) }
-        }
+        val caption = text("返回正在播放", 12).apply { maxLines = 1; ellipsize = android.text.TextUtils.TruncateAt.END }
+        val row = horizontalRow().apply { gravity = Gravity.CENTER_VERTICAL; minimumHeight = dp(50); setPadding(dp(20), 0, dp(4), 0); setBackgroundColor(color(com.google.android.material.R.attr.colorSurfaceContainerLow)) }
+        clickableRow(caption) { startActivity(Intent(this, PlayerActivity::class.java)) }
+        caption.minimumHeight = dp(48); caption.gravity = Gravity.CENTER_VERTICAL
         row.addView(caption, LinearLayout.LayoutParams(0, -2, 1f))
-        row.addView(imageButton(R.drawable.ic_play, "返回正在播放") {
-            startActivity(Intent(this, PlayerActivity::class.java))
-        }.apply { importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO; isFocusable = false }, LinearLayout.LayoutParams(dp(48), dp(48)))
+        row.addView(imageButton(if (lastPlaying) R.drawable.ic_pause else R.drawable.ic_play, if (lastPlaying) "暂停播放" else "继续播放") {
+            PlaybackService.togglePlayback(); updateMiniPlayer()
+        }, LinearLayout.LayoutParams(dp(44), dp(48)))
+        row.addView(imageButton(R.drawable.ic_stop, "停止播放") { PlaybackService.stopPlayback(this); updateMiniPlayer() }, LinearLayout.LayoutParams(dp(44), dp(48)))
         miniPlayer.addView(row)
         queryWorker.execute {
             val title = runCatching { app.database.video(key)?.optString("name") }.getOrNull() ?: "本地测试视频"
-            handler.post { if (!isDestroyed && lastPlayingKey == key) { caption.text = title; row.contentDescription = "返回正在播放：$title" } }
+            handler.post { if (!isDestroyed && lastPlayingKey == key) { caption.text = title; caption.contentDescription = "返回正在播放：$title" } }
         }
     }
 
@@ -1354,8 +1309,6 @@ class MainActivity : AppCompatActivity() {
 
     companion object {
         private const val PAGE_SIZE = 50
-        private const val MENU_CURRENT_PLAYBACK = 1001
-        private const val MENU_TEST_MEDIA = 1002
         private val AUTHENTICATED_PHASES = setOf("ready", "connecting", "offline", "expired")
     }
 }

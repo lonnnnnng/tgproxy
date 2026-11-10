@@ -1,4 +1,8 @@
 <resources>
+    <string name="pc_more">更多播放选项</string>
+    <string name="pc_audio">音轨与播放设置</string>
+    <string name="pc_no_subtitles">当前视频没有可选字幕</string>
+    <string name="pc_selected">已选</string>
     <string name="pc_subtitles">字幕</string>
     <string name="pc_settings">播放设置</string>
     <string name="pc_play">播放</string>

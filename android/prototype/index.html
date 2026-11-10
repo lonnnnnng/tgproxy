@@ -1,0 +1,64 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="color-scheme" content="light dark">
+  <link rel="icon" type="image/svg+xml" href="assets/favicon.svg">
+  <title>TGProxy · 视频库交互原型</title>
+  <link rel="stylesheet" href="prototype.css?v=compact-list-2">
+</head>
+<body>
+  <aside class="workbench-nav" aria-label="原型导航">
+    <a class="brand" href="#library"><span class="brand-mark" data-icon="logo"></span><span>TGProxy<span class="brand-caption">Android · 界面提案</span></span></a>
+    <div class="direction-copy"><h1>先看见内容。<br>再开始播放。</h1><p>把频道里的文件，整理成一个愿意打开的视频库。</p></div>
+    <nav id="preview-nav">
+      <button data-preview="library" class="active"><span data-icon="library"></span><span>视频资源</span></button>
+      <button data-preview="detail"><span data-icon="file"></span><span>资源详情</span></button>
+      <button data-preview="player"><span data-icon="play"></span><span>播放体验</span></button>
+      <button data-preview="channels"><span data-icon="channels"></span><span>频道管理</span></button>
+      <button data-preview="account"><span data-icon="user"></span><span>账号与偏好</span></button>
+    </nav>
+    <div class="prototype-note"><span data-icon="cursor"></span><p>可以直接点、搜、筛选和播放。<br>展示数据为示例，不连接真实账号。</p></div>
+    <div class="review-notes"><strong>这版重点看三件事</strong><p>资源是否容易辨认<br>搜索筛选是否顺手<br>从浏览到播放是否自然</p></div>
+    <a class="doc-link" href="README.md" target="_blank">原型说明 <span data-icon="external"></span></a>
+  </aside>
+  <main class="workbench-main">
+    <header class="preview-toolbar"><span class="preview-label"><i></i><span id="preview-label">视频资源</span><span class="preview-size">手机预览</span></span><div><button class="tool-button" id="preview-theme" aria-label="切换浅色深色"><span data-icon="moon"></span></button><button class="tool-button landscape-toggle" id="preview-landscape" aria-label="横屏播放"><span data-icon="rotate"></span><span>横屏播放</span></button></div></header>
+    <div class="stage">
+      <section class="device" id="device" aria-label="TGProxy 手机交互原型">
+        <div class="status-bar"><span>9:41</span><div><span data-icon="signal"></span><span data-icon="wifi"></span><span data-icon="battery"></span></div></div>
+        <div class="app" id="app">
+          <section class="screen active" id="library-screen" aria-label="视频库">
+            <div class="library-tools">
+              <div class="search-box"><span data-icon="search"></span><input id="search" type="search" placeholder="搜索视频名称" aria-label="搜索视频名称" autocomplete="off"><button class="icon-button search-clear" id="clear-search" aria-label="清空搜索" hidden><span data-icon="close"></span></button></div>
+              <div class="library-tabs"><div class="text-tabs" role="tablist" aria-label="视频范围"><button class="selected" role="tab" aria-selected="true" data-scope="all">全部视频</button><button role="tab" aria-selected="false" data-scope="recent">最近播放</button></div><button class="filter-control" id="filter-button"><span data-icon="filter"></span><span id="filter-label">所有频道</span><span class="tiny-icon" data-icon="chevron-down"></span></button></div>
+            </div>
+            <div class="screen-scroll" id="library-scroll">
+              <section class="continue-section" id="continue-section"><div class="section-heading"><h3>继续观看</h3></div><div class="continue-track" id="continue-track"></div></section>
+              <section class="all-section"><div class="section-heading resources-heading"><h3 id="results-heading">视频列表 <span id="results-count">12 部</span></h3><div class="section-actions"><button class="icon-button" id="sort-button" aria-label="排序视频"><span data-icon="sort"></span></button></div></div><div class="video-grid" id="video-grid"></div><div class="empty-state" id="empty-state" hidden><span class="empty-icon" data-icon="search"></span><h3>没有找到这个视频</h3><p>试试更短的名称，或切换到所有频道。</p><button class="primary-button" id="reset-search">清除筛选</button></div><p class="list-end" id="list-end">已显示全部视频</p></section>
+            </div>
+          </section>
+          <section class="screen" id="channels-screen" aria-label="频道管理"><div class="channel-toolbar"><span><span id="channel-count">4</span> 个频道 <span class="count-separator">/</span> <span id="channel-total">12 个视频</span></span><div class="channel-toolbar-actions"><button class="icon-button" id="sync-all" aria-label="同步全部频道" title="同步全部频道"><span data-icon="refresh"></span></button><button class="compact-add" id="add-channel"><span data-icon="plus"></span>添加频道</button></div></div><div class="screen-scroll channel-scroll"><div id="channel-list"></div><div class="quiet-tip"><span data-icon="info"></span><p>频道里的视频会保存在本机索引中。移除频道不会退出 Telegram 频道。</p></div></div></section>
+          <section class="screen" id="account-screen" aria-label="账号与偏好"><div class="screen-scroll account-scroll"><div class="profile"><div class="profile-avatar">L</div><div><h3>Long</h3><p>Telegram 已授权</p></div><span data-icon="shield"></span></div><div class="settings-section"><h3>播放与显示</h3><button class="settings-row" id="appearance-setting"><span class="setting-symbol" data-icon="sun"></span><span>外观</span><small id="appearance-value">浅色</small><span data-icon="chevron-right"></span></button><button class="settings-row" id="default-speed-setting"><span class="setting-symbol" data-icon="speed"></span><span>默认播放速度</span><small id="default-speed-value">1.0×</small><span data-icon="chevron-right"></span></button><button class="settings-row" id="gesture-help"><span class="setting-symbol" data-icon="hand"></span><span>播放手势</span><small>操作说明</small><span data-icon="chevron-right"></span></button></div><div class="settings-section"><h3>账号与数据</h3><button class="settings-row" id="account-info"><span class="setting-symbol" data-icon="key"></span><span>Telegram 授权</span><small>已连接</small><span data-icon="chevron-right"></span></button><button class="settings-row" id="storage-info"><span class="setting-symbol" data-icon="database"></span><span>本机数据</span><small>12 个视频</small><span data-icon="chevron-right"></span></button></div><p class="account-footer">TGProxy · 交互原型</p></div></section>
+          <section class="screen detail-screen" id="detail-screen" aria-label="视频详情"><div class="screen-scroll" id="detail-scroll"></div></section>
+          <section class="player-screen" id="player-screen" aria-label="播放器" hidden>
+            <img class="player-image" id="player-image" src="assets/mountains.jpg" alt="示例视频画面" draggable="false">
+            <div class="brightness-mask" id="brightness-mask"></div>
+            <div class="gesture-area" id="gesture-area" aria-label="点按显示或隐藏控制栏，双击左右两侧跳转" tabindex="0"></div>
+            <div class="player-controls" id="player-controls"><header class="player-top"><button class="icon-button" id="player-back" aria-label="返回视频库"><span data-icon="back"></span></button><div><strong id="player-title">沿着山脊，等一场日出</strong><span id="player-source">山野放映室</span></div><button class="icon-button" id="player-more" aria-label="播放设置"><span data-icon="more"></span></button></header><div class="player-center"><button class="seek-button" id="seek-back" aria-label="后退10秒"><span data-icon="rewind"></span><span>10</span></button><button class="play-button" id="play-toggle" aria-label="暂停"><span data-icon="pause"></span></button><button class="seek-button" id="seek-forward" aria-label="前进10秒"><span data-icon="forward"></span><span>10</span></button></div><footer class="player-bottom"><div class="seek-info"><span id="time-current">12:36</span><span id="time-duration">24:08</span></div><input id="timeline" type="range" min="0" max="1448" value="756" aria-label="播放进度"><div class="player-actions"><button id="player-lock"><span data-icon="lock"></span><span>锁定</span></button><div><button id="speed-button">1.0×</button><button id="ratio-button" aria-label="选择画面比例"><span data-icon="ratio"></span><span>适应</span></button><button id="player-rotate" aria-label="切换横竖屏"><span data-icon="fullscreen"></span></button></div></div></footer></div>
+            <button class="unlock-button" id="unlock-button" hidden><span data-icon="unlock"></span><span>点按解锁</span></button><div class="gesture-feedback" id="gesture-feedback" role="status" hidden></div><div class="boost-feedback" id="boost-feedback" hidden><span data-icon="forward"></span>2× 播放中</div><span class="demo-watermark">画面示意</span>
+          </section>
+          <div class="mini-player" id="mini-player" hidden><button id="mini-resume"><span><strong id="mini-title">沿着山脊，等一场日出</strong><small id="mini-subtitle">继续播放</small></span></button><button class="icon-button" id="mini-toggle" aria-label="暂停播放"><span data-icon="pause"></span></button><button class="icon-button" id="mini-close" aria-label="停止并关闭播放"><span data-icon="close"></span></button></div>
+          <nav class="bottom-nav" id="bottom-nav" aria-label="主要导航"><button data-route="library" class="selected" aria-current="page"><span class="nav-icon" data-icon="library"></span><span>视频</span></button><button data-route="channels"><span class="nav-icon" data-icon="channels"></span><span>频道</span></button><button data-route="account"><span class="nav-icon" data-icon="user"></span><span>我的</span></button></nav>
+          <div class="sheet-backdrop" id="sheet-backdrop" hidden></div><section class="bottom-sheet" id="bottom-sheet" role="dialog" aria-modal="true" aria-labelledby="sheet-title" hidden><div class="sheet-handle"></div><header class="sheet-header"><h3 id="sheet-title"></h3><button class="icon-button" id="close-sheet" aria-label="关闭面板"><span data-icon="close"></span></button></header><div class="sheet-body" id="sheet-body"></div></section>
+          <div class="snackbar" id="snackbar" role="status" hidden></div>
+        </div>
+        <div class="gesture-nav"><span></span></div>
+      </section>
+    </div>
+    <p class="preview-footer">交互原型 · 示例数据与播放画面<span>支持浅色 / 深色</span></p>
+  </main>
+  <script src="prototype.js?v=compact-list-2"></script>
+</body>
+</html>

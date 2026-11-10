@@ -79,4 +79,24 @@ class IndexDatabaseTest {
         assertEquals(count, app.database.count(id))
         app.prepareScan()
     }
+    @Test fun publicationSortAndContinueWatchingUseTheirOwnData() {
+        val name = "presentation-${UUID.randomUUID()}.db"
+        try { MediaDatabase(context, name).use { db ->
+            db.addChannel(channel(1))
+            // long: 消息 ID 与发布时间故意反序，避免排序误用 ID 仍能通过测试。
+            db.applyPage(1, page(0, 20, true,
+                video(1, 20, "B.mp4").put("date", 1704067200L),
+                video(1, 10, "A.mp4").put("date", 1704153600L)), false)
+            assertEquals("1_10", db.videos().getJSONObject(0).getString("key"))
+            assertEquals("1_20", db.videos(sort = "oldest").getJSONObject(0).getString("key"))
+            assertEquals("A.mp4", db.videos(sort = "name").getJSONObject(0).getString("name"))
+            assertEquals(1704067200L, db.video("1_20")!!.getLong("date"))
+            db.savePosition("1_20", 12000); db.savePosition("1_10", 0)
+            assertEquals(2, db.videos(recent = true).length())
+            assertEquals(1, db.continueWatching().length())
+            assertEquals("1_20", db.continueWatching().getJSONObject(0).getString("key"))
+            assertEquals(12000L, db.continueWatching().getJSONObject(0).getLong("position"))
+        } } finally { context.deleteDatabase(name) }
+    }
+
 }

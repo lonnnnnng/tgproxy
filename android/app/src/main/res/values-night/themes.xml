@@ -1,24 +1,24 @@
 <resources>
     <style name="Theme.TGProxy" parent="Theme.Material3.DayNight.NoActionBar">
-        <item name="colorPrimary">#AEC1FF</item>
+        <item name="colorPrimary">#AEC3FF</item>
         <item name="colorOnPrimary">#102A68</item>
-        <item name="colorPrimaryContainer">#263B6C</item>
+        <item name="colorPrimaryContainer">#2D3B5D</item>
         <item name="colorOnPrimaryContainer">#DFE7FF</item>
         <item name="colorSecondary">#94D5BF</item>
         <item name="colorOnSecondary">#0E392C</item>
         <item name="colorSecondaryContainer">#203F38</item>
         <item name="colorOnSecondaryContainer">#B9EBD9</item>
-        <item name="colorSurface">#10151F</item>
-        <item name="colorOnSurface">#E7ECF6</item>
-        <item name="colorOnSurfaceVariant">#A9B4C8</item>
+        <item name="colorSurface">#171D27</item>
+        <item name="colorOnSurface">#ECF0F7</item>
+        <item name="colorOnSurfaceVariant">#A2AEC2</item>
         <item name="colorSurfaceVariant">#303C51</item>
         <item name="colorSurfaceContainerLowest">#0B1018</item>
-        <item name="colorSurfaceContainerLow">#1A2231</item>
+        <item name="colorSurfaceContainerLow">#242C3A</item>
         <item name="colorSurfaceContainer">#202B3C</item>
         <item name="colorSurfaceContainerHigh">#283448</item>
         <item name="colorSurfaceContainerHighest">#313E53</item>
         <item name="colorOutline">#8391AA</item>
-        <item name="colorOutlineVariant">#344155</item>
+        <item name="colorOutlineVariant">#2C3545</item>
         <item name="colorError">#FFB4AB</item>
         <item name="android:windowLightStatusBar">false</item>
         <item name="android:fontFamily">sans</item>

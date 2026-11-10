@@ -26,4 +26,5 @@
         <item name="boxCornerRadiusBottomStart">12dp</item>
         <item name="boxCornerRadiusBottomEnd">12dp</item>
     </style>
+    <style name="TextAppearance.TGProxy.Nav" parent="TextAppearance.Material3.LabelSmall"><item name="android:textSize">11sp</item></style>
 </resources>
