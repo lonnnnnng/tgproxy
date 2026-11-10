@@ -14,3 +14,4 @@ dependencyResolutionManagement {
 }
 rootProject.name = "TGProxyMobile"
 include(":app")
+include(":player-controls")

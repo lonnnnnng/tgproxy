@@ -5,6 +5,7 @@ import android.content.Context
 import android.content.Intent
 import android.os.Handler
 import android.os.Looper
+import dev.longvideo.controls.PlaybackPreferences
 import androidx.media3.common.AudioAttributes
 import androidx.media3.common.C
 import androidx.media3.common.MediaItem
@@ -44,6 +45,8 @@ class PlaybackService : MediaSessionService() {
             .setSeekBackIncrementMs(10000).setSeekForwardIncrementMs(10000)
             .setAudioAttributes(AudioAttributes.Builder().setUsage(C.USAGE_MEDIA).setContentType(C.AUDIO_CONTENT_TYPE_MOVIE).build(), true)
             .setHandleAudioBecomingNoisy(true).setWakeMode(C.WAKE_MODE_NETWORK).build()
+        // long: 通知入口或后台重建服务同样恢复已选倍率，临时 2× 不写入该偏好。
+        player.setPlaybackSpeed(PlaybackPreferences(this).speed)
         player.addListener(object : Player.Listener {
             override fun onIsPlayingChanged(isPlaying: Boolean) { savePosition() }
             override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) { currentKey = mediaItem?.mediaId }

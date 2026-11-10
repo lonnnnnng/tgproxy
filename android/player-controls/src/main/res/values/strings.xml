@@ -1,0 +1,31 @@
+<resources>
+    <string name="pc_subtitles">字幕</string>
+    <string name="pc_settings">播放设置</string>
+    <string name="pc_play">播放</string>
+    <string name="pc_speed">倍速</string>
+    <string name="pc_speed_value">%1$s× 倍速</string>
+    <string name="pc_ratio">画面比例</string>
+    <string name="pc_lock">锁定</string>
+    <string name="pc_unlock">解锁控制</string>
+    <string name="pc_locked">已锁定 · 点按画面可显示解锁按钮</string>
+    <string name="pc_back">返回</string>
+    <string name="pc_rotate">旋转屏幕</string>
+    <string name="pc_info">播放信息</string>
+    <string name="pc_help">操作提示</string>
+    <string name="pc_help_text">双击画面左侧 / 右侧：后退 / 前进 10 秒\n长按画面：临时 2×，松手恢复\n左侧上下滑动：调节亮度\n右侧上下滑动：调节媒体音量\n锁定后点按画面可解锁，系统返回键也可解锁。\n\n倍速会记住上次选择。亮度仅在播放器页面生效。</string>
+    <string name="pc_close">知道了</string>
+    <string name="pc_boost">2× 快播 · 松手恢复</string>
+    <string name="pc_seek_forward">前进 10 秒</string>
+    <string name="pc_seek_back">后退 10 秒</string>
+    <string name="pc_unseekable">当前媒体暂不支持跳转</string>
+    <string name="pc_brightness">亮度 %1$d%%</string>
+    <string name="pc_volume">音量 %1$d%%</string>
+    <string name="pc_volume_fixed">请使用设备音量键调节</string>
+    <string-array name="pc_ratios">
+        <item>适应画面</item>
+        <item>填满裁切</item>
+        <item>拉伸铺满</item>
+        <item>16:9</item>
+        <item>4:3</item>
+    </string-array>
+</resources>

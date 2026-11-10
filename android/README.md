@@ -2,7 +2,7 @@
 
 TGProxy Android 是面向 ARM64 手机的 Telegram 频道视频索引和播放器。App 使用 Telegram 用户账号读取已加入频道中的视频，索引保存在本机，播放通过手机内的 Range 服务交给 Media3。它不依赖 Linux TGProxy 服务、Jellyfin 或媒体树。
 
-当前版本为 **0.2.1**，仅支持 `arm64-v8a`、Android 8.0/API 26 及以上。
+当前版本为 **0.3.0**，仅支持 `arm64-v8a`、Android 8.0/API 26 及以上。
 
 ## 构建环境
 
@@ -67,6 +67,14 @@ adb -s SERIAL install --no-incremental -r app/build/outputs/apk/release/tgproxy-
 频道扫描暂停、App 进程被回收或系统结束后台任务后，可以从最后提交的游标继续。移除频道只删除本机对应的索引和播放记录，不会退出 Telegram 频道。
 
 API 凭证和授权会话使用 Android Keystore 加密，文件位于应用 `noBackupFilesDir`；SQLite 位于应用私有目录。内置 Go HTTP 服务只监听 `127.0.0.1`，并要求随机 Bearer token。公开分发前应改用在 Telegram 官方 `my.telegram.org` 为自己的应用申请的 API ID/Hash。详情见 [技术说明](TECHNICAL.md) 和 [设备验收记录](VERIFICATION.md)。
+
+## 播放器控制
+
+底栏直接选择并记住倍速，长按画面临时 2×，松手恢复；双击左侧后退 10 秒、右侧前进 10 秒。左侧上下滑动调亮度，右侧调媒体音量。支持锁定防误触，以及适应、裁切、拉伸、16:9、4:3 五种画面模式。单击显示/隐藏控制栏，问号入口可查看操作说明。
+
+锁定后点按画面显示“解锁控制”，系统返回键也可先解锁。亮度仅在当前播放器窗口生效，进入后台恢复；媒体音量保留用户调整。后台播放、同一视频恢复、字幕和音轨沿用 Media3。
+
+控制器已拆为可单独构建 AAR 的 [player-controls 模块](player-controls/README.md)。[Android 0.3.0 发行版](https://github.com/lonnnnnng/tgproxy/releases/tag/android-v0.3.0) 同时提供 App APK 和组件 AAR，组件接入无需 Telegram 或 TGProxy 服务。
 
 ## 测试
 

@@ -2,14 +2,14 @@ package dev.tgproxy.mobile
 
 import android.content.ComponentName
 import android.content.pm.ActivityInfo
-import android.content.res.ColorStateList
 import android.os.Bundle
 import android.view.Gravity
-import android.view.MenuItem
 import android.view.View
 import android.view.WindowManager
 import android.widget.FrameLayout
 import android.widget.TextView
+import androidx.activity.OnBackPressedCallback
+import dev.longvideo.controls.VideoControlsView
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.content.ContextCompat
 import androidx.core.view.ViewCompat
@@ -17,21 +17,19 @@ import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.media3.common.C
 import androidx.media3.common.MediaItem
+import androidx.media3.common.MediaMetadata
 import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
 import androidx.media3.common.Tracks
 import androidx.media3.session.MediaController
 import androidx.media3.session.SessionToken
-import androidx.media3.ui.PlayerView
-import com.google.android.material.appbar.MaterialToolbar
 import com.google.android.material.dialog.MaterialAlertDialogBuilder
 import com.google.common.util.concurrent.ListenableFuture
 
 @androidx.annotation.OptIn(markerClass = [androidx.media3.common.util.UnstableApi::class])
 class PlayerActivity : AppCompatActivity() {
     private val app get() = application as TgApplication
-    private lateinit var view: PlayerView
-    private lateinit var toolbar: MaterialToolbar
+    private lateinit var view: VideoControlsView
     private lateinit var note: TextView
     private var controller: MediaController? = null
     private var future: ListenableFuture<MediaController>? = null
@@ -42,6 +40,9 @@ class PlayerActivity : AppCompatActivity() {
         override fun onPlaybackStateChanged(playbackState: Int) { updateNote() }
         override fun onTracksChanged(tracks: Tracks) { updateNote() }
         override fun onPlayerError(error: PlaybackException) { updateNote() }
+        override fun onMediaMetadataChanged(mediaMetadata: MediaMetadata) {
+            view.title = mediaMetadata.title ?: intent.getStringExtra("title") ?: "正在播放"
+        }
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -55,49 +56,25 @@ class PlayerActivity : AppCompatActivity() {
         resumePosition = savedInstanceState?.getLong("position") ?: if (validation || key.isEmpty()) 0L else app.database.position(key)
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         val root = FrameLayout(this).apply { setBackgroundColor(android.graphics.Color.BLACK) }
-        view = PlayerView(this).apply { controllerShowTimeoutMs = 4000; setShowBuffering(PlayerView.SHOW_BUFFERING_WHEN_PLAYING) }
-        root.addView(view, FrameLayout.LayoutParams(-1, -1))
-        val top = MaterialToolbar(this).apply {
-            setBackgroundColor(0xA6000000.toInt())
-            setTitleTextColor(android.graphics.Color.WHITE)
-            setTitleTextAppearance(context, com.google.android.material.R.style.TextAppearance_Material3_TitleMedium)
+        view = VideoControlsView(this).apply {
             title = intent.getStringExtra("title") ?: "正在播放"
-            navigationIcon = ContextCompat.getDrawable(this@PlayerActivity, R.drawable.ic_back)
-            setNavigationIconTint(android.graphics.Color.WHITE)
-            setNavigationContentDescription("返回视频库")
-            setNavigationOnClickListener { finish() }
-            menu.add(0, MENU_ROTATE, 0, "切换横竖屏").apply {
-                setIcon(R.drawable.ic_rotate)
-                iconTintList = ColorStateList.valueOf(android.graphics.Color.WHITE)
-                setShowAsAction(MenuItem.SHOW_AS_ACTION_IF_ROOM)
-            }
-            menu.add(0, MENU_INFO, 1, "播放信息").apply {
-                setIcon(R.drawable.ic_info)
-                iconTintList = ColorStateList.valueOf(android.graphics.Color.WHITE)
-                setShowAsAction(MenuItem.SHOW_AS_ACTION_IF_ROOM)
-            }
-            setOnMenuItemClickListener { item ->
-                when (item.itemId) {
-                    MENU_ROTATE -> { toggleOrientation(); true }
-                    MENU_INFO -> { showInfo(); true }
-                    else -> false
-                }
-            }
+            attachWindow(window)
+            onBack = { finish() }
+            onRotate = { toggleOrientation() }
+            onInfo = { showInfo() }
         }
-        toolbar = top
-        root.addView(top, FrameLayout.LayoutParams(-1, -2, Gravity.TOP))
+        root.addView(view, FrameLayout.LayoutParams(-1, -1))
+        onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
+            override fun handleOnBackPressed() {
+                if (view.isLocked) view.setLocked(false) else finish()
+            }
+        })
         note = TextView(this).apply {
             textSize = 14f; setTextColor(android.graphics.Color.WHITE); gravity = Gravity.CENTER
             setPadding(dp(20), dp(12), dp(20), dp(12)); setBackgroundColor(0x99000000.toInt())
             setOnClickListener { controller?.let { if (it.playerError != null) { it.prepare(); it.play() } } }
         }
-        root.addView(note, FrameLayout.LayoutParams(-1, -2, Gravity.BOTTOM).apply { bottomMargin = dp(110) })
-        view.controllerShowTimeoutMs = 3500
-        view.setShowBuffering(PlayerView.SHOW_BUFFERING_WHEN_PLAYING)
-        view.setControllerVisibilityListener(PlayerView.ControllerVisibilityListener { visibility ->
-            top.visibility = visibility
-            note.visibility = if (note.text.isNotEmpty()) View.VISIBLE else View.GONE
-        })
+        root.addView(note, FrameLayout.LayoutParams(-1, -2, Gravity.BOTTOM).apply { bottomMargin = dp(150) })
         ViewCompat.setOnApplyWindowInsetsListener(root) { target, insets ->
             val bars = insets.getInsets(WindowInsetsCompat.Type.systemBars() or WindowInsetsCompat.Type.displayCutout())
             target.setPadding(bars.left, bars.top, bars.right, bars.bottom); insets
@@ -115,7 +92,7 @@ class PlayerActivity : AppCompatActivity() {
             try {
                 val player = pending.get()
                 controller = player
-                toolbar.title = player.mediaMetadata.title ?: intent.getStringExtra("title") ?: "正在播放"
+                view.title = player.mediaMetadata.title ?: intent.getStringExtra("title") ?: "正在播放"
                 view.player = player
                 player.addListener(listener)
                 // long: 同一视频返回页面只重新绑定控制器，不能重新 setMediaItem 导致跳回旧进度。
@@ -131,6 +108,7 @@ class PlayerActivity : AppCompatActivity() {
     }
 
     override fun onStop() {
+        view.onHostStop()
         resumePosition = controller?.currentPosition ?: resumePosition
         controller?.removeListener(listener)
         view.player = null
@@ -145,7 +123,6 @@ class PlayerActivity : AppCompatActivity() {
         val player = controller ?: return
         note.text = when {
             player.playerError != null -> getString(R.string.playback_error, player.playerError!!.errorCodeName) + " · 点击重试"
-            player.playbackState == Player.STATE_BUFFERING -> "正在缓冲…"
             player.playbackState == Player.STATE_ENDED -> "播放完毕"
             else -> ""
         }
@@ -171,8 +148,4 @@ class PlayerActivity : AppCompatActivity() {
     internal fun testPlayer(): Player? = controller
     private fun dp(value: Int) = (value * resources.displayMetrics.density).toInt()
 
-    companion object {
-        private const val MENU_ROTATE = 2101
-        private const val MENU_INFO = 2102
-    }
 }

@@ -10,8 +10,8 @@ android {
         applicationId = "dev.tgproxy.mobile"
         minSdk = 26
         targetSdk = 36
-        versionCode = 3
-        versionName = "0.2.1"
+        versionCode = 4
+        versionName = "0.3.0"
         resValue("string", "app_name", "TGProxy")
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         ndk { abiFilters += "arm64-v8a" }
@@ -34,6 +34,7 @@ android {
 }
 
 dependencies {
+    implementation(project(":player-controls"))
     implementation(files("libs/tgproxy.aar"))
     implementation("androidx.appcompat:appcompat:1.7.1")
     implementation("androidx.core:core-ktx:1.17.0")
