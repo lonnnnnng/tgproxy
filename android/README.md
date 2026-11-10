@@ -2,6 +2,8 @@
 
 TGProxy Android 是面向 ARM64 手机的 Telegram 频道视频索引和播放器。App 使用 Telegram 用户账号读取已加入频道中的视频，索引保存在本机，播放通过手机内的 Range 服务交给 Media3。它不依赖 Linux TGProxy 服务、Jellyfin 或媒体树。
 
+当前版本为 **0.2.1**，仅支持 `arm64-v8a`、Android 8.0/API 26 及以上。
+
 ## 构建环境
 
 - Go 1.27.3
@@ -37,6 +39,10 @@ zsh build-release.sh
 
 Release 与 `.poc` Debug 使用不同 application ID，因此是两个独立应用，首次安装 Release 时需要单独登录。当前仅包含 `arm64-v8a`。
 
+## 获取发行版
+
+从 [GitHub Releases](https://github.com/lonnnnnng/tgproxy/releases) 下载 `tgproxy-android-arm64.apk`。升级时直接安装新版即可保留 App 数据；请勿先卸载旧版。确认文件完整性时，对照 Android 发行说明中的 SHA-256。
+
 ## 安装到手机
 
 打开手机的 USB 调试并授权电脑，从 `android/` 目录执行：
@@ -55,7 +61,8 @@ adb -s SERIAL install --no-incremental -r app/build/outputs/apk/release/tgproxy-
 2. API ID 和 API Hash 是可选项。两项都留空时使用项目预设值；填写自有凭证时必须成对提供。
 3. 在“频道”页从 Telegram 已加入的频道中选择，或输入公开频道链接/ID 添加频道。
 4. 分别扫描历史视频、继续历史扫描，或检查并同步新增内容。每完成一页，视频条目和原始 Telegram 消息游标会一并保存。
-5. 在“视频”页搜索名称、按频道筛选、查看最近播放、分页和播放。播放器退出到后台后可继续播放，系统媒体通知提供播放控制。
+5. 在“视频”页搜索名称、按频道筛选、查看最近播放、分页和播放。切换页面保留列表位置，翻页回到顶部；播放器退出到后台后可继续播放，可从底部入口返回。
+6. 在“账号 → 外观”中选择跟随系统、浅色或深色。API 凭证折叠区域不会清空未提交内容，Hash 和两步验证密码默认遮蔽。
 
 频道扫描暂停、App 进程被回收或系统结束后台任务后，可以从最后提交的游标继续。移除频道只删除本机对应的索引和播放记录，不会退出 Telegram 频道。
 

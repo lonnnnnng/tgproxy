@@ -105,6 +105,10 @@ class MediaDatabase(context: Context, name: String = "media.db") : SQLiteOpenHel
     fun channels(): JSONArray = readableDatabase.rawQuery("SELECT payload FROM channels ORDER BY id", null).use {
         JSONArray().apply { while (it.moveToNext()) put(JSONObject(it.getString(0))) }
     }
+    fun channelCounts(): Map<Long, Long> = readableDatabase.rawQuery("SELECT channel_id,COUNT(*) FROM videos GROUP BY channel_id", null).use {
+        // long: 频道列表一次聚合数量，避免每张频道卡重复访问数据库拖慢滚动和首屏。
+        buildMap { while (it.moveToNext()) put(it.getLong(0), it.getLong(1)) }
+    }
     fun channel(id: Long = 0): JSONObject? = readableDatabase.rawQuery(
         if (id == 0L) "SELECT payload FROM channels ORDER BY id LIMIT 1" else "SELECT payload FROM channels WHERE id=?",
         if (id == 0L) null else arrayOf(id.toString())).use { if (it.moveToFirst()) JSONObject(it.getString(0)) else null }

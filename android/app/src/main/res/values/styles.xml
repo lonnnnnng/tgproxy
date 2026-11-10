@@ -1,0 +1,29 @@
+<resources>
+    <style name="Widget.TGProxy.Button" parent="Widget.Material3.Button">
+        <item name="cornerRadius">12dp</item>
+        <item name="android:minHeight">48dp</item>
+        <item name="android:minWidth">0dp</item>
+        <item name="android:textSize">14sp</item>
+    </style>
+    <style name="Widget.TGProxy.Button.Outlined" parent="Widget.Material3.Button.OutlinedButton">
+        <item name="cornerRadius">12dp</item>
+        <item name="android:minHeight">48dp</item>
+        <item name="android:minWidth">0dp</item>
+        <item name="android:textSize">14sp</item>
+    </style>
+    <style name="Widget.TGProxy.Button.Text" parent="Widget.Material3.Button.TextButton">
+        <item name="cornerRadius">12dp</item>
+        <item name="android:minHeight">48dp</item>
+        <item name="android:minWidth">0dp</item>
+        <item name="android:textSize">14sp</item>
+    </style>
+    <style name="ThemeOverlay.TGProxy.TextButton" parent="">
+        <item name="materialButtonStyle">@style/Widget.TGProxy.Button.Text</item>
+    </style>
+    <style name="Widget.TGProxy.TextField" parent="Widget.Material3.TextInputLayout.OutlinedBox">
+        <item name="boxCornerRadiusTopStart">12dp</item>
+        <item name="boxCornerRadiusTopEnd">12dp</item>
+        <item name="boxCornerRadiusBottomStart">12dp</item>
+        <item name="boxCornerRadiusBottomEnd">12dp</item>
+    </style>
+</resources>

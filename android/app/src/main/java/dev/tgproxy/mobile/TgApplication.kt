@@ -30,6 +30,8 @@ class TgApplication : Application() {
 
     override fun onCreate() {
         super.onCreate()
+        androidx.appcompat.app.AppCompatDelegate.setDefaultNightMode(
+            getSharedPreferences("appearance", MODE_PRIVATE).getInt("theme", androidx.appcompat.app.AppCompatDelegate.MODE_NIGHT_FOLLOW_SYSTEM))
         vault = SessionVault(this)
         database = MediaDatabase(this)
         initialize()

@@ -2,12 +2,13 @@ package dev.tgproxy.mobile
 
 import android.content.ComponentName
 import android.content.pm.ActivityInfo
+import android.content.res.ColorStateList
 import android.os.Bundle
 import android.view.Gravity
+import android.view.MenuItem
 import android.view.View
 import android.view.WindowManager
 import android.widget.FrameLayout
-import android.widget.LinearLayout
 import android.widget.TextView
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.content.ContextCompat
@@ -22,7 +23,7 @@ import androidx.media3.common.Tracks
 import androidx.media3.session.MediaController
 import androidx.media3.session.SessionToken
 import androidx.media3.ui.PlayerView
-import com.google.android.material.button.MaterialButton
+import com.google.android.material.appbar.MaterialToolbar
 import com.google.android.material.dialog.MaterialAlertDialogBuilder
 import com.google.common.util.concurrent.ListenableFuture
 
@@ -30,6 +31,7 @@ import com.google.common.util.concurrent.ListenableFuture
 class PlayerActivity : AppCompatActivity() {
     private val app get() = application as TgApplication
     private lateinit var view: PlayerView
+    private lateinit var toolbar: MaterialToolbar
     private lateinit var note: TextView
     private var controller: MediaController? = null
     private var future: ListenableFuture<MediaController>? = null
@@ -45,25 +47,44 @@ class PlayerActivity : AppCompatActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         WindowCompat.setDecorFitsSystemWindows(window, false)
+        WindowCompat.getInsetsController(window, window.decorView).apply {
+            isAppearanceLightStatusBars = false
+            isAppearanceLightNavigationBars = false
+        }
         key = if (validation) "validation" else intent.getStringExtra("key") ?: ""
         resumePosition = savedInstanceState?.getLong("position") ?: if (validation || key.isEmpty()) 0L else app.database.position(key)
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         val root = FrameLayout(this).apply { setBackgroundColor(android.graphics.Color.BLACK) }
         view = PlayerView(this).apply { controllerShowTimeoutMs = 4000; setShowBuffering(PlayerView.SHOW_BUFFERING_WHEN_PLAYING) }
         root.addView(view, FrameLayout.LayoutParams(-1, -1))
-        val top = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setBackgroundColor(0x99000000.toInt()) }
-        top.addView(TextView(this).apply {
-            text = intent.getStringExtra("title") ?: "正在播放"; textSize = 16f; setTextColor(android.graphics.Color.WHITE)
-            setPadding(dp(16), dp(12), dp(16), dp(4)); maxLines = 2
-        })
-        val actions = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
-        fun control(label: String, action: () -> Unit) = MaterialButton(this).apply { text = label; minHeight = dp(48); setOnClickListener { action() } }
-        actions.addView(control("返回") { finish() }, LinearLayout.LayoutParams(0, -2, 1f))
-        actions.addView(control("横竖屏") {
-            requestedOrientation = if (resources.configuration.orientation == android.content.res.Configuration.ORIENTATION_LANDSCAPE) ActivityInfo.SCREEN_ORIENTATION_PORTRAIT else ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE
-        }, LinearLayout.LayoutParams(0, -2, 1f))
-        actions.addView(control("播放信息") { showInfo() }, LinearLayout.LayoutParams(0, -2, 1f))
-        top.addView(actions)
+        val top = MaterialToolbar(this).apply {
+            setBackgroundColor(0xA6000000.toInt())
+            setTitleTextColor(android.graphics.Color.WHITE)
+            setTitleTextAppearance(context, com.google.android.material.R.style.TextAppearance_Material3_TitleMedium)
+            title = intent.getStringExtra("title") ?: "正在播放"
+            navigationIcon = ContextCompat.getDrawable(this@PlayerActivity, R.drawable.ic_back)
+            setNavigationIconTint(android.graphics.Color.WHITE)
+            setNavigationContentDescription("返回视频库")
+            setNavigationOnClickListener { finish() }
+            menu.add(0, MENU_ROTATE, 0, "切换横竖屏").apply {
+                setIcon(R.drawable.ic_rotate)
+                iconTintList = ColorStateList.valueOf(android.graphics.Color.WHITE)
+                setShowAsAction(MenuItem.SHOW_AS_ACTION_IF_ROOM)
+            }
+            menu.add(0, MENU_INFO, 1, "播放信息").apply {
+                setIcon(R.drawable.ic_info)
+                iconTintList = ColorStateList.valueOf(android.graphics.Color.WHITE)
+                setShowAsAction(MenuItem.SHOW_AS_ACTION_IF_ROOM)
+            }
+            setOnMenuItemClickListener { item ->
+                when (item.itemId) {
+                    MENU_ROTATE -> { toggleOrientation(); true }
+                    MENU_INFO -> { showInfo(); true }
+                    else -> false
+                }
+            }
+        }
+        toolbar = top
         root.addView(top, FrameLayout.LayoutParams(-1, -2, Gravity.TOP))
         note = TextView(this).apply {
             textSize = 14f; setTextColor(android.graphics.Color.WHITE); gravity = Gravity.CENTER
@@ -71,7 +92,12 @@ class PlayerActivity : AppCompatActivity() {
             setOnClickListener { controller?.let { if (it.playerError != null) { it.prepare(); it.play() } } }
         }
         root.addView(note, FrameLayout.LayoutParams(-1, -2, Gravity.BOTTOM).apply { bottomMargin = dp(110) })
-        view.setControllerVisibilityListener(PlayerView.ControllerVisibilityListener { top.visibility = it })
+        view.controllerShowTimeoutMs = 3500
+        view.setShowBuffering(PlayerView.SHOW_BUFFERING_WHEN_PLAYING)
+        view.setControllerVisibilityListener(PlayerView.ControllerVisibilityListener { visibility ->
+            top.visibility = visibility
+            note.visibility = if (note.text.isNotEmpty()) View.VISIBLE else View.GONE
+        })
         ViewCompat.setOnApplyWindowInsetsListener(root) { target, insets ->
             val bars = insets.getInsets(WindowInsetsCompat.Type.systemBars() or WindowInsetsCompat.Type.displayCutout())
             target.setPadding(bars.left, bars.top, bars.right, bars.bottom); insets
@@ -89,6 +115,7 @@ class PlayerActivity : AppCompatActivity() {
             try {
                 val player = pending.get()
                 controller = player
+                toolbar.title = player.mediaMetadata.title ?: intent.getStringExtra("title") ?: "正在播放"
                 view.player = player
                 player.addListener(listener)
                 // long: 同一视频返回页面只重新绑定控制器，不能重新 setMediaItem 导致跳回旧进度。
@@ -124,6 +151,10 @@ class PlayerActivity : AppCompatActivity() {
         }
         note.visibility = if (note.text.isEmpty()) View.GONE else View.VISIBLE
     }
+    private fun toggleOrientation() {
+        requestedOrientation = if (resources.configuration.orientation == android.content.res.Configuration.ORIENTATION_LANDSCAPE)
+            ActivityInfo.SCREEN_ORIENTATION_PORTRAIT else ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE
+    }
     private fun showInfo() {
         val player = controller ?: return
         val audio = player.currentTracks.groups.filter { it.type == C.TRACK_TYPE_AUDIO }
@@ -139,4 +170,9 @@ class PlayerActivity : AppCompatActivity() {
     }
     internal fun testPlayer(): Player? = controller
     private fun dp(value: Int) = (value * resources.displayMetrics.density).toInt()
+
+    companion object {
+        private const val MENU_ROTATE = 2101
+        private const val MENU_INFO = 2102
+    }
 }

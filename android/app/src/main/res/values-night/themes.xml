@@ -1,14 +1,30 @@
 <resources>
     <style name="Theme.TGProxy" parent="Theme.Material3.DayNight.NoActionBar">
-        <item name="colorPrimary">#A5B7FF</item>
-        <item name="colorOnPrimary">#142346</item>
-        <item name="colorPrimaryContainer">#2C385E</item>
-        <item name="colorOnPrimaryContainer">#DFE5FF</item>
-        <item name="colorSurface">#131722</item>
-        <item name="colorOnSurface">#E9EDF7</item>
-        <item name="colorOnSurfaceVariant">#A5B0C6</item>
+        <item name="colorPrimary">#AEC1FF</item>
+        <item name="colorOnPrimary">#102A68</item>
+        <item name="colorPrimaryContainer">#263B6C</item>
+        <item name="colorOnPrimaryContainer">#DFE7FF</item>
+        <item name="colorSecondary">#94D5BF</item>
+        <item name="colorOnSecondary">#0E392C</item>
+        <item name="colorSecondaryContainer">#203F38</item>
+        <item name="colorOnSecondaryContainer">#B9EBD9</item>
+        <item name="colorSurface">#10151F</item>
+        <item name="colorOnSurface">#E7ECF6</item>
+        <item name="colorOnSurfaceVariant">#A9B4C8</item>
+        <item name="colorSurfaceVariant">#303C51</item>
+        <item name="colorSurfaceContainerLowest">#0B1018</item>
+        <item name="colorSurfaceContainerLow">#1A2231</item>
+        <item name="colorSurfaceContainer">#202B3C</item>
+        <item name="colorSurfaceContainerHigh">#283448</item>
+        <item name="colorSurfaceContainerHighest">#313E53</item>
+        <item name="colorOutline">#8391AA</item>
+        <item name="colorOutlineVariant">#344155</item>
+        <item name="colorError">#FFB4AB</item>
         <item name="android:windowLightStatusBar">false</item>
         <item name="android:fontFamily">sans</item>
         <item name="android:windowActionModeOverlay">true</item>
+        <item name="materialButtonStyle">@style/Widget.TGProxy.Button</item>
+        <item name="materialButtonOutlinedStyle">@style/Widget.TGProxy.Button.Outlined</item>
+        <item name="textInputOutlinedStyle">@style/Widget.TGProxy.TextField</item>
     </style>
 </resources>

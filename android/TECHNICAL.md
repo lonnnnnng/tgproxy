@@ -1,6 +1,6 @@
 # TGProxy Android 技术说明
 
-本文描述 Android 0.2.0 的模块职责、数据格式和生命周期约束。产品范围与操作流程见 [README.md](README.md)；设备和构建验收结果见 [VERIFICATION.md](VERIFICATION.md)。
+本文描述 Android 0.2.1 的模块职责、数据格式和生命周期约束。产品范围与操作流程见 [README.md](README.md)；设备和构建验收结果见 [VERIFICATION.md](VERIFICATION.md)。
 
 ## 运行结构
 
@@ -99,6 +99,14 @@ Android `PlaybackService` 持有 ExoPlayer 和 MediaSession，负责音频焦点
 MediaSession callback 只接受同 application UID 的 controller。controller 传入 `mediaId`，服务从 SQLite 读取 payload、向 Go 注册视频，再生成本机 URL。调用者不能直接指定 URI，因此不会把认证 header 转发至任意服务器。认证 header 只配置到 Media3 使用的本机 HTTP data source。
 
 Go Range 缓存采用 512 KiB chunk、64 MiB LRU 容量、3 个顺序预取块；同一 source resolution 缓存 1 分钟，最多 32 项。Android 使用 Media3 `DefaultHttpDataSource`/ExoPlayer 读取本机流。服务按请求范围取流，支持跳播，无需先下载完整视频。
+
+## 界面与本地状态
+
+`MainActivity` 采用 MaterialToolbar、BottomNavigationView、TextInputLayout 和分隔式媒体列表。视频目的地把数量摘要、搜索和筛选放在 `videoHeader` 固定区；主 `ScrollView` 只承载视频结果列表。查询由独立 executor 执行；结果回到主线程前比对请求编号与容器身份，防止切换页面后的旧查询写入新页面。列表每页 50 条，频道数量使用单次 GROUP BY 聚合。滚动位置在异步列表填充后恢复，翻页显式回到顶部。
+
+搜索、频道筛选、页码、目的地和频道输入草稿保存在 Activity 状态中。API ID/Hash、验证码和两步验证密码仅在进程内保留，通过非配置实例在主题变化、旋转时恢复；不写入系统保存状态。凭证展开/收起只切换区域可见性，保留输入控件与焦点。密码变换器在单行设置后应用，防止单行变换覆盖密码遮蔽。
+
+外观选择存于应用私有 SharedPreferences，由 `TgApplication` 启动时调用 AppCompatDelegate 应用。全局扫描状态位于滚动区外，三个目的地共享暂停入口。授权失效时的重新授权使用现有 `configure` 重建无 session 的引擎，保留数据库并提示继续登录原账号；显式退出仍会清空本机账号数据。
 
 ## 构建、包名和签名
 
