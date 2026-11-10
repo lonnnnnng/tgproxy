@@ -23,5 +23,6 @@ TGProxy Android 是面向 ARM64 手机的 Telegram 频道视频索引和播放�
 
 - APK 使用现有 Release 签名，并通过 v2/v3 签名校验。
 - POCO F2 Pro（ARM64）设备回归 12 项通过，1 项登录草稿用例因已有授权跳过；覆盖导航、固定搜索/筛选、主题切换、Range 快进、后台播放、数据库和 Keystore。
-- 完整 Debug、Release、Android 测试包构建及 Android Lint 通过。
-- 完整 SHA-256 列在 GitHub 发行说明及 `tgproxy-android-arm64.apk.sha256` 中。
+- Release 构建、Debug 构建、Android 测试包及 Lint 均通过；正式包已在 POCO 上覆盖升级，设备读回 APK 与发布文件 SHA-256 一致。
+- APK SHA-256：`62332a455d2023e68111c79cbb0f9924e491d70bf57b33fe8eac0f06f4a9bccd`
+- 独立校验值见 `tgproxy-android-arm64.apk.sha256`。

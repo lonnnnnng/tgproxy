@@ -60,3 +60,5 @@ Debug/Release、Android 测试包及 Lint 通过。新版 Release 沿用原签�
 通过 `build-release.sh` 重建 ARM64 Go AAR、正式 APK 并验证 v2/v3 签名；Debug、Android 测试包和 Lint 构建通过。POCO F2 Pro 的 `NavigationTest`、`CorePlaybackTest`、`IndexDatabaseTest` 串行回归报 `OK (13 tests)`：12 项实际通过，登录草稿用例因设备已授权按条件跳过。覆盖固定搜索/筛选、搜索与分页、页面恢复、主题切换、Range 与快进、后台播放、数据库和 Keystore。此次没有重新登录、触发授权失效或运行全量频道扫描。
 
 记录位于忽略目录 `app/build/validation/android-v0.2.1-*`。GitHub 发布内容使用 [RELEASE-v0.2.1.md](RELEASE-v0.2.1.md)，附正式 APK 和独立校验文件。
+
+正式包已在 POCO 上覆盖升级并启动，设备报告 `0.2.1` / `versionCode 3`。从设备读回的安装包与本地发布 APK SHA-256 均为 `62332a455d2023e68111c79cbb0f9924e491d70bf57b33fe8eac0f06f4a9bccd`，签名证书与 0.2.0 相同。
