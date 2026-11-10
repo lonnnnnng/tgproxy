@@ -304,6 +304,23 @@ class NavigationTest {
         }
     }
 
+    @Test fun diagnosticsShowsOnlySafeCounters() {
+        ActivityScenario.launch(MainActivity::class.java).use { scenario ->
+            scenario.onActivity { activity ->
+                views(activity).filterIsInstance<BottomNavigationView>().single().selectedItemId=R.id.nav_account
+                views(activity).first{it.contentDescription?.toString()?.startsWith("运行诊断，")==true}.performClick()
+            }
+            Thread.sleep(2400)
+            scenario.onActivity { activity ->
+                val panel=activity.activeSheetContent!!
+                val labels=descendants(panel).filterIsInstance<android.widget.TextView>().joinToString("\n"){it.text.toString()}
+                assertTrue(labels.contains("最近下载速度"));assertTrue(labels.contains("文件引用刷新"))
+                assertTrue(!labels.contains("Bearer "));assertTrue(!labels.contains("http://"));assertTrue(!labels.contains("session="))
+            }
+            capture("diagnostics.png")
+        }
+    }
+
     private fun capture(name: String) {
         val instrument = InstrumentationRegistry.getInstrumentation()
         instrument.waitForIdleSync()

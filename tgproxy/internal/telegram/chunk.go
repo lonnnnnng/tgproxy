@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"sync"
 
 	"github.com/gotd/td/tg"
 	"github.com/gotd/td/tgerr"
@@ -25,10 +26,83 @@ func (c *Client) ChunkSource(h *FileHandle, chunkSize int64) *chunkSource {
 // chunkSource fetches aligned chunks via upload.getFile on the file's DC.
 // It satisfies tgproxy/internal/stream.ChunkSource (Chunk(ctx, offset, b)).
 type chunkSource struct {
-	c       *Client
-	h       *FileHandle
-	chunk   int64
-	refresh func(context.Context, int64, int) (*FileHandle, error)
+	c          *Client
+	h          *FileHandle
+	chunk      int64
+	refresh    func(context.Context, int64, int) (*FileHandle, error)
+	mu         sync.Mutex
+	current    *FileHandle
+	version    uint64
+	refreshing chan struct{}
+}
+
+func (cs *chunkSource) location() (*FileHandle, uint64) {
+	cs.mu.Lock()
+	defer cs.mu.Unlock()
+	if cs.current == nil {
+		cs.current = cs.h
+	}
+	return cs.current, cs.version
+}
+
+func (cs *chunkSource) migrate(version uint64, dc int) {
+	cs.mu.Lock()
+	defer cs.mu.Unlock()
+	if cs.version != version {
+		return
+	}
+	h := *cs.current
+	h.DC = dc
+	cs.current = &h
+	cs.version++
+	cs.c.migrations.Add(1)
+}
+
+func (cs *chunkSource) refreshLocation(ctx context.Context, version uint64) error {
+	for {
+		cs.mu.Lock()
+		if cs.version != version {
+			cs.mu.Unlock()
+			return nil
+		}
+		if pending := cs.refreshing; pending != nil {
+			cs.mu.Unlock()
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-pending:
+				continue
+			}
+		}
+		pending := make(chan struct{})
+		cs.refreshing = pending
+		cs.mu.Unlock()
+		// long: 预取和正式读取共享一次引用恢复，成功后所有后续块复用新位置；原文件身份始终不变。
+		h, err := cs.refresh(ctx, cs.h.ChannelID, cs.h.MessageID)
+		if err == nil && (h == nil || fileIdentity(h) != fileIdentity(cs.h)) {
+			err = errors.New("Telegram 文件已替换，请重新打开视频")
+		}
+		if err == nil {
+			if _, ok := h.Loc.(tg.InputFileLocationClass); !ok {
+				err = errors.New("invalid refreshed file location")
+			}
+		}
+		cs.mu.Lock()
+		if err == nil {
+			// long: 刷新进行中可能有另一块完成 DC 迁移；保留迁移结果并合入新引用，不能丢弃成功恢复。
+			fresh := *h
+			if cs.version != version {
+				fresh.DC = cs.current.DC
+			}
+			cs.current = &fresh
+			cs.version++
+			cs.c.referenceRefreshes.Add(1)
+		}
+		cs.refreshing = nil
+		close(pending)
+		cs.mu.Unlock()
+		return err
+	}
 }
 
 func fileIdentity(h *FileHandle) string {
@@ -52,7 +126,8 @@ func (cs *chunkSource) Chunk(ctx context.Context, offset int64, b []byte) (int64
 	if pool == nil {
 		return 0, errors.New("telegram not connected")
 	}
-	dc := cs.h.DC
+	h, version := cs.location()
+	dc := h.DC
 	api := pool.Client(ctx, dc)
 
 	limit := cs.chunk
@@ -60,9 +135,9 @@ func (cs *chunkSource) Chunk(ctx context.Context, offset int64, b []byte) (int64
 		limit = remain
 	}
 
-	loc, err := cs.inputLocation()
-	if err != nil {
-		return 0, err
+	loc, ok := h.Loc.(tg.InputFileLocationClass)
+	if !ok {
+		return 0, errors.New("invalid file location")
 	}
 
 	var n int64
@@ -79,27 +154,29 @@ func (cs *chunkSource) Chunk(ctx context.Context, offset int64, b []byte) (int64
 
 		res, err := api.UploadGetFile(ctx, req)
 		if err != nil {
+			if latest, latestVersion := cs.location(); latestVersion != version {
+				h, version = latest, latestVersion
+				dc = h.DC
+				loc = h.Loc.(tg.InputFileLocationClass)
+				api = pool.Client(ctx, dc)
+				continue
+			}
 			if migration, ok := tgerr.AsType(err, "FILE_MIGRATE"); ok && migration.Argument > 0 && migration.Argument != dc && migrations < 3 {
 				migrations++
-				dc = migration.Argument
+				cs.migrate(version, migration.Argument)
+				h, version = cs.location()
+				dc = h.DC
+				loc = h.Loc.(tg.InputFileLocationClass)
 				api = pool.Client(ctx, dc)
 				continue
 			}
 			if (tgerr.Is(err, "FILE_REFERENCE_EXPIRED") || tgerr.Is(err, "FILE_REFERENCE_INVALID")) && references == 0 && cs.refresh != nil {
 				references++
-				h, freshErr := cs.refresh(ctx, cs.h.ChannelID, cs.h.MessageID)
-				if freshErr != nil {
-					return n, freshErr
+				if err := cs.refreshLocation(ctx, version); err != nil {
+					return n, err
 				}
-				// long: 消息可能被编辑换片，不能把新文件分块拼进旧文件缓存。
-				if fileIdentity(h) != fileIdentity(cs.h) {
-					return n, errors.New("Telegram 文件已替换，请重新打开视频")
-				}
-				freshLoc, ok := h.Loc.(tg.InputFileLocationClass)
-				if !ok {
-					return n, errors.New("invalid refreshed file location")
-				}
-				loc = freshLoc
+				h, version = cs.location()
+				loc = h.Loc.(tg.InputFileLocationClass)
 				dc = h.DC
 				api = pool.Client(ctx, dc)
 				continue

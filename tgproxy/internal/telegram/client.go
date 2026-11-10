@@ -22,17 +22,23 @@ import (
 
 // Client wraps gotd client + DC pool for tgproxy operations.
 type Client struct {
-	dataDir  string
-	dialogMu sync.Mutex
-	appID    int
-	appHash  string
+	dataDir    string
+	dialogGate chan struct{}
+	dialogOnce sync.Once
+	appID      int
+	appHash    string
 
-	runtimeMu     sync.RWMutex
-	connectMu     sync.Mutex
-	connectCancel context.CancelFunc
-	pool          dcpool.Pool
-	peerMgr       *peers.Manager
-	connected     atomic.Bool
+	runtimeMu          sync.RWMutex
+	connectMu          sync.Mutex
+	connectCancel      context.CancelFunc
+	pool               dcpool.Pool
+	peerMgr            *peers.Manager
+	connected          atomic.Bool
+	accountID          atomic.Int64
+	connectionState    atomic.Int32
+	reconnects         atomic.Int64
+	migrations         atomic.Int64
+	referenceRefreshes atomic.Int64
 
 	// Stateful login: one persistent client + pending auth state so that
 	// "send code" and "sign in" reuse the same connection and phone_code_hash
@@ -148,7 +154,7 @@ func (c *Client) ResendCode(ctx context.Context, phone string) error {
 	c.loginMu.Lock()
 	defer c.loginMu.Unlock()
 
-	if c.loginClient == nil || c.loginPending == nil {
+	if !c.loginActiveLocked() {
 		return ErrNoLogin
 	}
 	if c.loginPending.phone != phone {
@@ -169,7 +175,7 @@ func (c *Client) SignIn(ctx context.Context, code string) error {
 	c.loginMu.Lock()
 	defer c.loginMu.Unlock()
 
-	if c.loginClient == nil || c.loginPending == nil {
+	if !c.loginActiveLocked() {
 		return ErrNoLogin
 	}
 	client, p := c.loginClient, c.loginPending
@@ -178,7 +184,7 @@ func (c *Client) SignIn(ctx context.Context, code string) error {
 	if err == nil {
 		return c.finishLoginLocked(ctx)
 	}
-	if tgerr.Is(err, "SESSION_PASSWORD_NEEDED") {
+	if passwordNeeded(err) {
 		return ErrPasswordNeeded
 	}
 	if tgerr.Is(err, "PHONE_CODE_INVALID") {
@@ -196,10 +202,13 @@ func (c *Client) SubmitPassword(ctx context.Context, password string) error {
 	c.loginMu.Lock()
 	defer c.loginMu.Unlock()
 
-	if c.loginClient == nil || c.loginPending == nil {
+	if !c.loginActiveLocked() {
 		return ErrNoLogin
 	}
 	if _, err := c.loginClient.Auth().Password(ctx, password); err != nil {
+		if errors.Is(err, auth.ErrPasswordInvalid) {
+			return errors.New("两步验证密码错误")
+		}
 		return err
 	}
 	return c.finishLoginLocked(ctx)
@@ -224,6 +233,7 @@ func (c *Client) resetLoginLocked() {
 	c.loginClient = nil
 	c.loginMem = nil
 	c.loginPending = nil
+	c.loginContext = nil
 }
 
 // Session returns the session bytes from a completed login, if any.
@@ -280,15 +290,28 @@ func (c *Client) Connect(ctx context.Context, sessionData []byte, onReady func(d
 	if err := mem.StoreSession(runCtx, sessionData); err != nil {
 		return err
 	}
-	td := telegram.NewClient(c.appID, c.appHash, telegram.Options{SessionStorage: &mem})
+	td := telegram.NewClient(c.appID, c.appHash, telegram.Options{SessionStorage: &mem,
+		OnConnectionStateEvent: func(event telegram.ConnectionStateEvent) {
+			// long: 主连接 Ready 不等于已授权，只有已发布账号和连接池后才能报告在线。
+			c.connectionState.Store(int32(event.State))
+			c.runtimeMu.RLock()
+			ready := event.State == telegram.ConnectionStateReady && c.pool != nil && c.accountID.Load() > 0
+			c.runtimeMu.RUnlock()
+			c.connected.Store(ready)
+			if event.State == telegram.ConnectionStateDisconnected {
+				c.reconnects.Add(1)
+			}
+		},
+	})
 	return td.Run(runCtx, func(ctx context.Context) error {
 		status, err := td.Auth().Status(ctx)
 		if err != nil {
 			return err
 		}
-		if !status.Authorized {
+		if !status.Authorized || status.User == nil || status.User.ID <= 0 {
 			return errors.New("session not authorized; login first")
 		}
+		c.accountID.Store(status.User.ID)
 		// long: 配合最多 7 个并发预取保留需求下载容量，高延迟时不再只靠两块轮流等待。
 		pool := &safePool{inner: dcpool.NewPool(td, 8, telegram.MiddlewareFunc(floodMiddleware))}
 		defer pool.Close()

@@ -62,8 +62,10 @@ class MainActivity : AppCompatActivity() {
     private var activeSheet: BottomSheetDialog? = null
     internal var activeSheetContent: View? = null
         private set
-    private var scanCard: View? = null
-    private var scanPause: View? = null
+    private var updateAllButton: ChannelUpdateButton? = null
+    private var channelSummary: TextView? = null
+    private data class ChannelRowState(val channel: JSONObject, val count: Long, val label: TextView, val update: ChannelUpdateButton)
+    private val channelRows = mutableMapOf<Long, ChannelRowState>()
     private var codeDraft = ""
     private var passwordDraft = ""
     private var credentialEdited = false
@@ -76,11 +78,9 @@ class MainActivity : AppCompatActivity() {
     private var destination = R.id.nav_videos
     private var lastPhase = ""
     private var lastBusy = false
-    private var observedScan = false
+    private var completedScanID = 0L
     private var hasStarted = false
     private var status = JSONObject()
-    private var scanStatus: TextView? = null
-    private var scanIndicator: LinearProgressIndicator? = null
     private val buttons = mutableListOf<MaterialButton>()
     private var search = ""
     private var searchField: TextInputEditText? = null
@@ -98,11 +98,17 @@ class MainActivity : AppCompatActivity() {
     private var credentialDraftId = ""
     private var credentialDraftHash = ""
     private var pendingScan: Pair<Long, Boolean>? = null
+    private var pendingRecheck = false
+    private var pendingAll = false
+    private var scanLaunching = false
+    private var recentSort = "watched"
+    private var lastAccountIssue: String? = null
+    private var lastStartupIssue: String? = null
     private var searchRunnable: Runnable? = null
     private val notificationPermission = registerForActivityResult(
         androidx.activity.result.contract.ActivityResultContracts.RequestPermission()
     ) {
-        pendingScan?.let { launchScan(it.first, it.second) }
+        pendingScan?.let { launchScan(it.first, it.second, pendingRecheck, pendingAll) }
         pendingScan = null
     }
 
@@ -110,33 +116,32 @@ class MainActivity : AppCompatActivity() {
         override fun run() {
             status = app.engine?.let { JSONObject(it.status()) } ?: JSONObject()
             val phase = status.optString("state", "starting")
-            progress.visibility = if (app.busy) View.VISIBLE else View.GONE
-            scanStatus?.text = app.scanMessage
-            val hasScanStatus = app.scanning
-            scanCard?.visibility = if (hasScanStatus) View.VISIBLE else View.GONE
-            scanPause?.visibility = if (app.scanning) View.VISIBLE else View.GONE
-            scanPause?.isEnabled = true
-            scanIndicator?.visibility = if (app.scanning) View.VISIBLE else View.GONE
-            if (app.scanning) observedScan = true
-            if (observedScan && !app.scanning && !app.busy) {
-                // long: 完成状态不常驻占空间，但暂停、失败和成功仍需反馈，并刷新本机索引结果。
-                observedScan = false
-                message(app.scanMessage)
+            if (lastAccountIssue != app.accountIssue || lastStartupIssue != app.startupError) {
+                lastAccountIssue = app.accountIssue; lastStartupIssue = app.startupError; render()
+            }
+            // long: 扫描在原按钮和频道行反馈，不能再出现全局加载条挤动页面。
+            val scans = app.scanQueue.snapshot
+            progress.visibility = if (app.busy && !app.scanning && scans.runID <= completedScanID) View.VISIBLE else View.GONE
+            updateScanViews(scans)
+            if (!scans.running && scans.runID > completedScanID && !app.busy) {
+                completedScanID = scans.runID
+                message(scans.summary)
                 if (destination == R.id.nav_videos) {
                     pendingScrollRestore = scroll.scrollY
                     showVideos()
                 }
+                channelListContainer?.let(::loadChannels)
             }
             val signedOutForm = phase in setOf("signed_out", "starting")
             if (destination == R.id.nav_account && phase != lastPhase && !app.busy &&
                 !(signedOutForm && loginFormPhase == "phone")) render()
             if (destination == R.id.nav_videos && phase != lastPhase && !app.busy) {
-                if (lastPhase == "starting" || phase == "signed_out" || (lastPhase == "connecting" && phase == "ready")) render()
+                if (lastPhase == "starting" || phase == "signed_out" || (lastPhase in setOf("connecting", "reconnecting") && phase == "ready")) render()
             }
             if (PlaybackService.currentKey != lastPlayingKey || PlaybackService.isPlaybackRequested() != lastPlaying) updateMiniPlayer()
             if (app.busy != lastBusy) {
                 buttons.forEach { it.isEnabled = !app.busy }
-                if (lastBusy && !app.busy && destination == R.id.nav_channels) channelListContainer?.let(::loadChannels)
+                if (lastBusy && !app.busy && destination == R.id.nav_channels && scans.runID == 0L) channelListContainer?.let(::loadChannels)
                 lastBusy = app.busy
             }
             lastPhase = phase
@@ -154,10 +159,18 @@ class MainActivity : AppCompatActivity() {
         recent = savedInstanceState?.getBoolean("recent") ?: false
         search = savedInstanceState?.getString("search") ?: ""
         page = savedInstanceState?.getInt("page") ?: 0
+        completedScanID = savedInstanceState?.getLong("completedScanID") ?: app.scanQueue.snapshot.runID
+        pendingScan = savedInstanceState?.takeIf { it.containsKey("pendingScan") }?.let {
+            it.getLong("pendingScan") to it.getBoolean("pendingRefresh")
+        }
+        pendingRecheck = savedInstanceState?.getBoolean("pendingRecheck") ?: false
+        pendingAll = savedInstanceState?.getBoolean("pendingAll") ?: false
+        if (savedInstanceState == null && intent.getBooleanExtra("open_channels", false)) destination = R.id.nav_channels
         if (savedInstanceState == null && intent.hasExtra("browse_channel")) {
             channelFilter = intent.getLongExtra("browse_channel", 0)
         }
         sort = getSharedPreferences("library", MODE_PRIVATE).getString("sort", "newest") ?: "newest"
+        recentSort = getSharedPreferences("library", MODE_PRIVATE).getString("recent_sort", "watched") ?: "watched"
         (lastCustomNonConfigurationInstance as? LoginDraft)?.let {
             credentialsExpanded = it.expanded; credentialsLoaded = it.loaded
             credentialDraftId = it.apiId; credentialDraftHash = it.hash; credentialEdited = it.edited
@@ -190,10 +203,6 @@ class MainActivity : AppCompatActivity() {
             trackColor = android.graphics.Color.TRANSPARENT
         }
         root.addView(progress, LinearLayout.LayoutParams(-1, dp(2)))
-        // long: 扫描属于整个应用的任务，浏览视频或切到账号时也必须能看到进度并暂停。
-        root.addView(scanPanel(), LinearLayout.LayoutParams(-1, -2).apply {
-            marginStart = dp(20); marginEnd = dp(20); bottomMargin = dp(8)
-        })
 
         // long: 搜索和筛选放在结果滚动区外，浏览到任意位置都能直接调整条件。
         videoHeader = LinearLayout(this).apply {
@@ -255,6 +264,7 @@ class MainActivity : AppCompatActivity() {
         if (intent.hasExtra("browse_channel")) {
             browseChannel(intent.getLongExtra("browse_channel", 0))
         }
+        if (intent.getBooleanExtra("open_channels", false)) navigation.selectedItemId = R.id.nav_channels
     }
 
     private fun browseChannel(id: Long) {
@@ -268,6 +278,8 @@ class MainActivity : AppCompatActivity() {
     override fun onStop() {
         scrollPositions[destination] = scroll.scrollY
         handler.removeCallbacks(poll)
+        updateAllButton?.stopAnimation()
+        channelRows.values.forEach { it.update.stopAnimation() }
         searchRunnable?.let(handler::removeCallbacks)
         super.onStop()
     }
@@ -295,6 +307,10 @@ class MainActivity : AppCompatActivity() {
         outState.putBoolean("recent", recent)
         outState.putString("search", search)
         outState.putInt("page", page)
+        outState.putLong("completedScanID", completedScanID)
+        pendingScan?.let { outState.putLong("pendingScan", it.first); outState.putBoolean("pendingRefresh", it.second) }
+        outState.putBoolean("pendingRecheck", pendingRecheck)
+        outState.putBoolean("pendingAll", pendingAll)
         if (::scroll.isInitialized) outState.putInt("scroll", scroll.scrollY)
         super.onSaveInstanceState(outState)
     }
@@ -306,6 +322,8 @@ class MainActivity : AppCompatActivity() {
         searchRunnable?.let(handler::removeCallbacks)
         activeSheet?.dismiss()
         buttons.clear()
+        updateAllButton?.stopAnimation(); updateAllButton = null; channelSummary = null
+        channelRows.values.forEach { it.update.stopAnimation() }; channelRows.clear()
         if (renderedDestination == destination) scrollPositions[destination] = scroll.scrollY
         pendingScrollRestore = scrollPositions[destination] ?: 0
         renderedDestination = destination
@@ -332,6 +350,11 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun videosPage() {
+        if (app.accountIssue != null) {
+            videoHeader.visibility = View.GONE
+            emptyState(R.drawable.ic_account, "请确认账号", app.accountIssue!!, "管理账号") { navigation.selectedItemId = R.id.nav_account }
+            return
+        }
         val channels = app.database.channels()
         if (channels.length() == 0) {
             videoHeader.visibility = View.GONE
@@ -410,6 +433,7 @@ class MainActivity : AppCompatActivity() {
             }
         }
         val filters = horizontalRow().apply { gravity = Gravity.CENTER_VERTICAL }
+        if (channelFilter != 0L && !channelsById.containsKey(channelFilter)) { channelFilter = 0; page = 0; pendingScrollRestore = 0 }
         val channelTitle = channelsById[channelFilter] ?: "全部频道"
         channelFilterButton = actionButton(
             label = channelTitle,
@@ -489,10 +513,9 @@ class MainActivity : AppCompatActivity() {
         val offset = page * PAGE_SIZE
         val selectedChannel = channelFilter
         val playbackOnly = recent
-        val order = sort
+        val order = if (recent) recentSort else sort
         queryWorker.execute {
             val rows = runCatching { app.database.videos(query, offset, PAGE_SIZE + 1, selectedChannel, playbackOnly, order) }
-            val continuing = if (query.isEmpty() && selectedChannel == 0L && !playbackOnly && offset == 0) runCatching { app.database.continueWatching() }.getOrDefault(JSONArray()) else JSONArray()
             handler.post {
                 if (isDestroyed || request != videoRequest || videosContainer !== target) return@post
                 target.removeAllViews()
@@ -503,9 +526,8 @@ class MainActivity : AppCompatActivity() {
                     })
                     return@post
                 }
-                if (continuing.length() > 0) {
-                    target.addView(sectionHeader("继续观看"))
-                    for (i in 0 until continuing.length()) target.addView(videoRow(continuing.getJSONObject(i), names, true))
+                if (result.length() == 0 && page > 0) {
+                    page = 0; pendingScrollRestore = 0; showVideos(names); return@post
                 }
                 val heading = horizontalRow().apply { gravity = Gravity.CENTER_VERTICAL; setPadding(0, dp(8), 0, dp(2)) }
                 heading.addView(text(if (query.isNotEmpty()) "搜索结果" else if (playbackOnly) "最近播放" else "视频列表", 14).apply { setTypeface(typeface, Typeface.BOLD) }, LinearLayout.LayoutParams(0, -2, 1f))
@@ -545,7 +567,7 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    private fun videoRow(item: JSONObject, channelNames: Map<Long, String>, resume: Boolean = false): View {
+    private fun videoRow(item: JSONObject, channelNames: Map<Long, String>): View {
         val title = item.optString("name", "未命名视频")
         val channel = channelNames[item.optLong("channel_id")] ?: "Telegram 频道"
         val published = MediaPresentation.published(item.optLong("date"))
@@ -554,9 +576,9 @@ class MainActivity : AppCompatActivity() {
             minimumHeight = dp(55)
             setPadding(0, dp(7), 0, dp(7))
             clickableRow(this) {
-                if (resume) playVideo(item) else startActivity(Intent(this@MainActivity, VideoDetailActivity::class.java).putExtra("key", item.getString("key")))
+                startActivity(Intent(this@MainActivity, VideoDetailActivity::class.java).putExtra("key", item.getString("key")))
             }
-            contentDescription = "${if (resume) "继续观看" else "查看视频"}：$title，$channel" + if (published.isNotEmpty()) "，发布于 $published" else ""
+            contentDescription = "查看视频：$title，$channel" + if (published.isNotEmpty()) "，发布于 $published" else ""
         }
         row.addView(text(title, 13).apply {
             typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
@@ -564,46 +586,53 @@ class MainActivity : AppCompatActivity() {
         })
         val meta = horizontalRow().apply { gravity = Gravity.CENTER_VERTICAL; setPadding(0, dp(4), 0, 0) }
         meta.addView(text(channel, 11).apply { setTextColor(muted()); maxLines = 1; ellipsize = android.text.TextUtils.TruncateAt.END }, LinearLayout.LayoutParams(0, -2, 1f))
-        val dateLabel = if (resume) "看到 ${MediaPresentation.position(item.optLong("position"))}" else published
-        if (dateLabel.isNotEmpty()) meta.addView(text(dateLabel, 11).apply {
+        if (published.isNotEmpty()) meta.addView(text(published, 11).apply {
             setTextColor(muted()); setPadding(dp(8), 0, 0, 0)
-            contentDescription = if (resume) dateLabel else "发布时间 $published"
+            contentDescription = "发布时间 $published"
         })
-        if (!resume) meta.addView(text(formatSize(item.optLong("size")), 11).apply { setTextColor(muted()); setPadding(dp(10), 0, 0, 0) })
+        meta.addView(text(formatSize(item.optLong("size")), 11).apply { setTextColor(muted()); setPadding(dp(10), 0, 0, 0) })
         row.addView(meta)
         return LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL; addView(row, LinearLayout.LayoutParams(-1, -2)); addView(divider())
         }
     }
 
-    private fun playVideo(item: JSONObject) {
-        if (app.engine?.let { JSONObject(it.status()).optBoolean("connected") } != true) { message("先连接 Telegram，再播放视频"); return }
-        startActivity(Intent(this, PlayerActivity::class.java).putExtra("key", item.getString("key")).putExtra("title", item.optString("name")))
-    }
-
     private fun showSortPicker() {
-        val values = arrayOf("newest", "oldest", "name")
-        val options = arrayOf("发布时间：从新到旧", "发布时间：从旧到新", "名称")
+        val values = if (recent) arrayOf("watched", "newest", "oldest", "name") else arrayOf("newest", "oldest", "name")
+        val options = if (recent) arrayOf("最近观看", "发布时间：从新到旧", "发布时间：从旧到新", "名称") else arrayOf("发布时间：从新到旧", "发布时间：从旧到新", "名称")
         val sheet = sheet("视频排序")
         options.forEachIndexed { index, label ->
-            sheet.addView(settingRow(label, if (sort == values[index]) "已选" else "", R.drawable.ic_sort) {
-                sort = values[index]
-                getSharedPreferences("library", MODE_PRIVATE).edit().putString("sort", sort).apply()
+            sheet.addView(settingRow(label, if ((if (recent) recentSort else sort) == values[index]) "已选" else "", R.drawable.ic_sort) {
+                if (recent) recentSort = values[index] else sort = values[index]
+                getSharedPreferences("library", MODE_PRIVATE).edit().putString("sort", sort).putString("recent_sort", recentSort).apply()
                 activeSheet?.dismiss(); page = 0; pendingScrollRestore = 0; showVideos()
             })
         }
     }
 
     private fun channelsPage() {
+        if (app.accountIssue != null) {
+            emptyState(R.drawable.ic_account, "请确认账号", app.accountIssue!!, "管理账号") { navigation.selectedItemId = R.id.nav_account }; return
+        }
         val bar = horizontalRow().apply { gravity = Gravity.CENTER_VERTICAL }
-        bar.addView(text("${app.database.channels().length()} 个频道 / ${app.database.count()} 个视频", 11).apply { setTextColor(muted()) }, LinearLayout.LayoutParams(0, -2, 1f))
-        bar.addView(imageButton(R.drawable.ic_sync, "选择频道同步") { chooseSyncChannel() }, LinearLayout.LayoutParams(dp(40), dp(44)))
+        val summary = text("正在读取本机索引…", 11).apply { setTextColor(muted()) }
+        channelSummary = summary
+        bar.addView(summary, LinearLayout.LayoutParams(0, -2, 1f))
+        updateAllButton = ChannelUpdateButton(this).apply {
+            setOnClickListener {
+                if (app.scanQueue.snapshot.running) pauseScan()
+                else if (channelRows.isEmpty()) message("请先添加频道")
+                else beginScan(0, true, all = true)
+            }
+        }
+        bar.addView(updateAllButton, LinearLayout.LayoutParams(dp(44), dp(48)))
         bar.addView(actionButton("添加频道", ButtonStyle.TEXT, R.drawable.ic_add) { showAddChannel() }.apply { textSize = 12f; iconSize = dp(17) }, LinearLayout.LayoutParams(-2, dp(44)))
         body.addView(bar)
         val listHost = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         channelListContainer = listHost
         body.addView(listHost)
         loadChannels(listHost)
+        updateScanViews(app.scanQueue.snapshot)
         body.addView(text("频道视频只保存在本机索引中。移除频道不会退出 Telegram 频道。", 11).apply {
             setTextColor(muted()); setPadding(0, dp(16), 0, 0)
         })
@@ -619,6 +648,7 @@ class MainActivity : AppCompatActivity() {
         reference.trackText { channelDraft = it }
         content.addView(box, rowParams(top = 12))
         content.addView(actionButton("添加", ButtonStyle.FILLED, R.drawable.ic_add) {
+            if (!app.mediaReady()) { message(app.accountIssue ?: "请先确认 Telegram 账号"); return@actionButton }
             val ref = reference.text.toString().trim()
             if (ref.isEmpty()) { reference.error = "输入频道链接、用户名或 ID"; return@actionButton }
             setActionsEnabled(false)
@@ -631,61 +661,52 @@ class MainActivity : AppCompatActivity() {
         }, rowParams(top = 10))
     }
 
-    private fun chooseSyncChannel() {
-        val channels = app.database.channels()
-        if (channels.length() == 0) { showAddChannel(); return }
-        val content = sheet("同步频道")
-        for (i in 0 until channels.length()) {
-            val ch = channels.getJSONObject(i)
-            content.addView(settingRow(ch.optString("title"), "", R.drawable.ic_sync) {
-                activeSheet?.dismiss(); beginScan(ch.getLong("channel_id"), true)
-            })
-        }
+    private fun pauseScan() {
+        app.cancelScan()
+        updateScanViews(app.scanQueue.snapshot)
     }
 
-    private fun scanPanel(): MaterialCardView {
-        val panel = MaterialCardView(this).apply {
-            radius = dp(12).toFloat()
-            cardElevation = 0f
-            strokeWidth = 0
-            setCardBackgroundColor(color(com.google.android.material.R.attr.colorSecondaryContainer))
-            visibility = if (app.scanning) View.VISIBLE else View.GONE
+    private fun updateScanViews(state: ChannelScanSnapshot) {
+        val stopping = state.entries.values.any { it.phase == ScanPhase.STOPPING }
+        updateAllButton?.bind(if (state.running) "暂停当前更新任务" else "更新全部频道",
+            state.running && !stopping, !stopping && (!app.busy || state.running))
+        navigation.getOrCreateBadge(R.id.nav_channels).apply { isVisible = state.running }
+        channelRows.forEach { (id, row) ->
+            val entry = state.entries[id]
+            val active = entry?.phase == ScanPhase.RUNNING
+            val defaultLabel = when {
+                row.channel.optLong("refresh_offset") > 0 -> "更新可续"
+                row.channel.optBoolean("history_done") -> "历史完成"
+                row.channel.optLong("history_offset") > 0 -> "历史可续"
+                else -> "尚未更新"
+            }
+            val label = entry?.message ?: defaultLabel
+            row.label.text = "${entry?.total ?: row.count} 个视频 · $label"
+            row.label.contentDescription = row.label.text
+            row.label.setTextColor(if (entry?.phase == ScanPhase.ERROR) color(com.google.android.material.R.attr.colorError) else muted())
+            val title = row.channel.optString("title")
+            val action = when (entry?.phase) {
+                ScanPhase.RUNNING -> "暂停更新"
+                ScanPhase.STOPPING -> "正在暂停"
+                ScanPhase.WAITING -> "等待更新"
+                ScanPhase.ERROR -> "重试更新"
+                ScanPhase.PAUSED -> "继续更新"
+                else -> "更新频道"
+            }
+            row.update.bind("$action：$title", active,
+                active || (!state.running && !app.busy))
         }
-        val content = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(12), dp(3), dp(4), dp(3)) }
-        val row = horizontalRow().apply { gravity = Gravity.CENTER_VERTICAL }
-        val labels = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
-        scanStatus = text(app.scanMessage, 12).apply {
-            typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
-            setTextColor(color(com.google.android.material.R.attr.colorOnSecondaryContainer))
-        }
-        labels.addView(scanStatus)
-        row.addView(labels, LinearLayout.LayoutParams(0, -2, 1f))
-        val pause = imageButton(R.drawable.ic_pause, "暂停扫描") {
-            app.cancelScan()
-            message("正在暂停，已完成页面会保留")
-        }
-        pause.isEnabled = true
-        pause.visibility = if (app.scanning) View.VISIBLE else View.GONE
-        scanPause = pause
-        scanCard = panel
-        row.addView(pause, LinearLayout.LayoutParams(dp(48), dp(48)))
-        content.addView(row)
-        scanIndicator = LinearProgressIndicator(this).apply {
-            isIndeterminate = true
-            trackThickness = dp(2)
-            trackColor = android.graphics.Color.TRANSPARENT
-            visibility = if (app.scanning) View.VISIBLE else View.GONE
-        }
-        content.addView(scanIndicator, LinearLayout.LayoutParams(-1, dp(2)).apply { topMargin = dp(7) })
-        panel.addView(content)
-        return panel
+        channelSummary?.text = if (state.running) {
+            val complete = state.tasks.count { state.entries[it.channelID]?.phase in listOf(ScanPhase.DONE, ScanPhase.ERROR) }
+            if (stopping) "正在暂停…" else "处理中 · $complete / ${state.tasks.size} 个频道"
+        } else if (channelRows.isNotEmpty()) {
+            val total = channelRows.values.sumOf { state.entries[it.channel.getLong("channel_id")]?.total ?: it.count }
+            "${channelRows.size} 个频道 / $total 个视频"
+        } else "0 个频道 / 0 个视频"
     }
 
     private fun loadChannels(host: LinearLayout) {
         val request = ++channelRequest
-        host.removeAllViews()
-        host.addView(LinearProgressIndicator(this).apply { isIndeterminate = true; trackThickness = dp(2) },
-            LinearLayout.LayoutParams(-1, dp(2)))
         queryWorker.execute {
             val result = runCatching {
                 val channels = app.database.channels()
@@ -693,10 +714,12 @@ class MainActivity : AppCompatActivity() {
             }
             handler.post {
                 if (isDestroyed || request != channelRequest || channelListContainer !== host) return@post
+                channelRows.values.forEach { it.update.stopAnimation() }; channelRows.clear()
                 host.removeAllViews()
                 result.onSuccess { (channels, counts) -> renderChannelCards(host, channels, counts) }
                     .onFailure { host.addView(text("无法读取频道列表，请重新进入此页。", 14)) }
                 restoreScroll()
+                updateScanViews(app.scanQueue.snapshot)
             }
         }
     }
@@ -718,9 +741,24 @@ class MainActivity : AppCompatActivity() {
                 clickableRow(this) { browseChannel(id) }
             }
             copy.addView(text(title, 13).apply { maxLines = 1; ellipsize = android.text.TextUtils.TruncateAt.END; setTypeface(typeface, Typeface.BOLD) })
-            val stateLabel = when { app.scanning -> ""; channel.optLong("refresh_offset") > 0 -> "新增可续"; channel.optBoolean("history_done") -> "历史完成"; channel.optLong("history_offset") > 0 -> "历史可续"; else -> "尚未扫描" }
-            copy.addView(text("${counts[id] ?: 0} 个视频   $stateLabel", 11).apply { setTextColor(muted()); setPadding(0, dp(3), 0, 0) })
+            val stateLabel = text("", 11).apply {
+                setTextColor(muted()); setPadding(0, dp(3), 0, 0)
+                maxLines = 1; ellipsize = android.text.TextUtils.TruncateAt.END
+            }
+            copy.addView(stateLabel)
             row.addView(copy, LinearLayout.LayoutParams(0, -2, 1f))
+            val update = ChannelUpdateButton(this).apply {
+                setOnClickListener {
+                    val entry = app.scanQueue.snapshot.entries[id]
+                    if (entry?.phase == ScanPhase.RUNNING) pauseScan()
+                    else {
+                        val mode = if (entry?.phase in listOf(ScanPhase.PAUSED, ScanPhase.ERROR)) entry!!.task.mode else ScanMode.UPDATE
+                        beginScan(id, mode == ScanMode.UPDATE, mode == ScanMode.RECHECK)
+                    }
+                }
+            }
+            channelRows[id] = ChannelRowState(channel, counts[id] ?: 0, stateLabel, update)
+            row.addView(update, LinearLayout.LayoutParams(dp(44), dp(48)))
             row.addView(imageButton(R.drawable.ic_more, "$title 更多操作") { channelMenu(it, channel) }, LinearLayout.LayoutParams(dp(40), dp(44)))
             host.addView(row); host.addView(divider())
         }
@@ -733,7 +771,13 @@ class MainActivity : AppCompatActivity() {
             menu.add("浏览视频").setOnMenuItemClickListener {
                 browseChannel(id); true
             }
-            menu.add(if (channel.optLong("refresh_offset") > 0) "继续同步新增" else "检查新增").setOnMenuItemClickListener { beginScan(id, true); true }
+            menu.add(if (channel.has("recheck_key")) "继续校验已索引资源" else "校验已索引资源").setOnMenuItemClickListener { beginScan(id, false, true); true }
+            app.scanQueue.snapshot.entries[id]?.error?.let { failure ->
+                menu.add("查看更新失败原因").setOnMenuItemClickListener {
+                    MaterialAlertDialogBuilder(this@MainActivity).setTitle("更新未完成").setMessage(failure)
+                        .setPositiveButton("知道了", null).show(); true
+                }
+            }
             if (!channel.optBoolean("history_done")) menu.add(if (channel.optLong("history_offset") > 0) "继续扫描历史" else "扫描历史").setOnMenuItemClickListener { beginScan(id, false); true }
             menu.add("移除频道").setOnMenuItemClickListener {
                 confirmRemoveChannel(channel)
@@ -749,9 +793,10 @@ class MainActivity : AppCompatActivity() {
             .setMessage("只会移除本机的视频索引和播放记录。Telegram 频道成员身份不会改变。")
             .setNegativeButton("取消", null).setPositiveButton("移除") { _, _ ->
                 if (PlaybackService.currentKey?.let { app.database.video(it)?.optLong("channel_id") } == id) PlaybackService.stopPlayback(this)
-                app.perform({ _ -> app.database.removeChannel(id); "" }) { _, error ->
+                app.perform({ _ -> app.database.removeChannel(id); app.scanQueue.forget(id); "" }) { _, error ->
                     if (!isDestroyed) {
                         if (channelFilter == id) channelFilter = 0
+                        page = 0; scrollPositions[R.id.nav_videos] = 0
                         if (error != null) message(error) else message("频道已从本机移除")
                         render()
                     }
@@ -760,7 +805,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun chooseChannelsFromTelegram() {
-        if (!status.optBoolean("connected")) { message("请先连接 Telegram"); return }
+        if (!status.optBoolean("connected") || !app.mediaReady()) { message(app.accountIssue ?: "请先确认 Telegram 账号"); return }
         setActionsEnabled(false)
         app.perform({ it.listChannels() }) { value, error ->
             if (isDestroyed) return@perform
@@ -794,18 +839,24 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    private fun beginScan(id: Long, refresh: Boolean) {
-        if (app.busy || app.scanning) { message("当前有索引任务正在运行"); return }
-        if (!status.optBoolean("connected")) { message("请先连接 Telegram"); return }
+    private fun beginScan(id: Long, refresh: Boolean, recheck: Boolean = false, all: Boolean = false) {
+        if (app.busy || app.scanning || scanLaunching || pendingScan != null) { message("当前有索引任务正在运行"); return }
+        if (!status.optBoolean("connected") || !app.mediaReady()) { message(app.accountIssue ?: "请先连接并确认 Telegram 账号"); return }
         if (Build.VERSION.SDK_INT >= 33 && checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
-            pendingScan = id to refresh
+            pendingScan = id to refresh; pendingRecheck = recheck; pendingAll = all
             notificationPermission.launch(Manifest.permission.POST_NOTIFICATIONS)
-        } else launchScan(id, refresh)
+        } else launchScan(id, refresh, recheck, all)
     }
 
-    private fun launchScan(id: Long, refresh: Boolean) {
-        ContextCompat.startForegroundService(this,
-            Intent(this, ScanService::class.java).putExtra("channel", id).putExtra("refresh", refresh))
+    private fun launchScan(id: Long, refresh: Boolean, recheck: Boolean = false, all: Boolean = false) {
+        if (app.busy || app.scanning || scanLaunching) return
+        scanLaunching = true
+        runCatching {
+            ContextCompat.startForegroundService(this,
+                Intent(this, ScanService::class.java).putExtra("channel", id).putExtra("refresh", refresh)
+                    .putExtra("recheck", recheck).putExtra("all", all))
+        }.onFailure { message("暂时无法开始更新，请回到前台重试") }
+        handler.postDelayed({ scanLaunching = false; updateScanViews(app.scanQueue.snapshot) }, 500)
     }
 
     private fun accountPage() {
@@ -815,6 +866,27 @@ class MainActivity : AppCompatActivity() {
             connectedAccountPage(phase)
         } else {
             loginPage(phase)
+        }
+        if (app.accountIssue != null) {
+            paragraph(app.accountIssue!!)
+            if (app.legacyOwnershipPending) body.addView(actionButton("确认旧索引归属", ButtonStyle.OUTLINED, R.drawable.ic_check) {
+                val id = status.optLong("account_id")
+                MaterialAlertDialogBuilder(this).setTitle("保留并绑定旧版索引？")
+                    .setMessage("旧版没有记录索引所属账号。当前 Telegram 账号 ID 为 $id。确认这是原账号后，才能继续使用这份频道和播放记录。更换账号请退出此设备。")
+                    .setNegativeButton("取消", null).setPositiveButton("这是原账号，保留索引") { _, _ -> app.confirmLegacyOwner(id) { failure -> if (!isDestroyed) { if (failure != null) message(failure); render() } } }.show()
+            }, rowParams())
+            body.addView(actionButton("重新登录原账号", ButtonStyle.OUTLINED, R.drawable.ic_refresh) {
+                app.recoverAuthorization { failure -> if (!isDestroyed) { if (failure != null) message(failure) else { status = JSONObject().put("state", "signed_out"); render() } } }
+            }, rowParams())
+        }
+        if (app.startupError != null) {
+            paragraph(app.startupError!!)
+            body.addView(actionButton("重置本机授权", ButtonStyle.OUTLINED, R.drawable.ic_refresh) {
+                MaterialAlertDialogBuilder(this).setTitle("重置本机授权？").setMessage("将清除损坏的登录授权并重新登录，频道索引保留并继续校验账号归属。")
+                    .setNegativeButton("取消", null).setPositiveButton("重置授权") { _, _ -> app.recoverAuthorization { failure ->
+                        if (!isDestroyed) { if (failure != null) message(failure) else { resetBrowseState(); render() } }
+                    } }.show()
+            }, rowParams())
         }
         appearanceSettings()
     }
@@ -879,12 +951,30 @@ class MainActivity : AppCompatActivity() {
         })
         body.addView(sectionHeader("账号与数据"))
         body.addView(settingRow("管理频道", "${app.database.channels().length()} 个", R.drawable.ic_channels) { navigation.selectedItemId = R.id.nav_channels })
-        body.addView(settingRow("本机索引", "${app.database.count()} 个视频", R.drawable.ic_video) {
+        body.addView(settingRow("本机索引", "索引说明", R.drawable.ic_video) {
             MaterialAlertDialogBuilder(this).setTitle("本机索引").setMessage("索引和播放记录保存在此设备。视频在播放时按需读取，不会自动下载完整视频。\n\n列表日期是 Telegram 消息发布时间，按设备时区显示。").setPositiveButton("关闭", null).show()
         })
+        body.addView(settingRow("运行诊断", "连接与下载", R.drawable.ic_info) { showDiagnostics() })
         body.addView(settingRow("播放诊断", "本地测试片", R.drawable.ic_play) { playValidation() })
-        if (status.optString("state") in AUTHENTICATED_PHASES) body.addView(settingRow("退出此设备", "", R.drawable.ic_logout) { confirmLogout() })
+        if (status.optString("state") in AUTHENTICATED_PHASES || app.startupError != null || app.accountIssue != null) body.addView(settingRow("退出此设备", "", R.drawable.ic_logout) { confirmLogout() })
         body.addView(text("TGProxy ${BuildConfig.VERSION_NAME}", 11).apply { setTextColor(muted()); gravity = Gravity.CENTER; setPadding(0, dp(22), 0, dp(8)) })
+    }
+
+    private fun resetBrowseState() {
+        channelFilter = 0; search = ""; page = 0; recent = false; channelDraft = ""
+        scrollPositions.clear(); pendingScrollRestore = 0
+    }
+    private fun showDiagnostics() {
+        val first = app.engine?.let { JSONObject(it.status()) } ?: JSONObject()
+        val copy = text("正在统计下载状态…", 13)
+        val panel = sheet("运行诊断"); panel.addView(copy)
+        handler.postDelayed({
+            if (copy.isAttachedToWindow) {
+                val now = app.engine?.let { JSONObject(it.status()) } ?: JSONObject()
+                val speed = (now.optLong("downloaded_bytes") - first.optLong("downloaded_bytes")).coerceAtLeast(0) / 2
+                copy.text = "${phaseLabel(now.optString("state"))}\n最近下载速度：${MediaPresentation.size(speed)} / 秒\n分块缓存：${MediaPresentation.size(now.optLong("cache_bytes"))}\n缓存命中 / 未命中：${now.optLong("hits")} / ${now.optLong("misses")}\n分块失败：${now.optLong("fetch_errors")}\n最近失败：${now.optString("last_failure").ifBlank { "无" }}\n连接重试：${now.optLong("reconnects")}\n文件引用刷新：${now.optLong("reference_refreshes")}\n文件 DC 迁移：${now.optLong("dc_migrations")}"
+            }
+        }, 2000)
     }
 
     private fun muted() = color(com.google.android.material.R.attr.colorOnSurfaceVariant)
@@ -932,7 +1022,7 @@ class MainActivity : AppCompatActivity() {
     private fun loginPage(phase: String) {
         paragraph(when (phase) {
             "expired" -> "授权已过期。重新连接后可继续使用已保存的频道索引。"
-            "offline", "connecting" -> "正在恢复 Telegram 连接。检查网络后通常会自动重连。"
+            "offline", "connecting", "reconnecting" -> "正在恢复 Telegram 连接。检查网络后通常会自动重连。"
             "code", "password" -> "验证码用于确认 Telegram 账号本人操作。"
             else -> "连接 Telegram 后，即可浏览已加入频道中的视频。"
         })
@@ -967,6 +1057,11 @@ class MainActivity : AppCompatActivity() {
             }
             else -> phoneLoginForm()
         }
+        if (phase in setOf("code", "password")) body.addView(actionButton("重新开始登录", ButtonStyle.TEXT, R.drawable.ic_refresh) {
+            app.perform({ core -> core.restartLogin(); "signed_out" }) { _, failure ->
+                if (!isDestroyed) { if (failure != null) message(failure) else { codeDraft = ""; passwordDraft = ""; status = JSONObject().put("state", "signed_out"); render() } }
+            }
+        }, rowParams())
     }
 
     private fun phoneLoginForm() {
@@ -1065,7 +1160,7 @@ class MainActivity : AppCompatActivity() {
                 app.logout { error ->
                     if (!isDestroyed) {
                         if (error != null) message(error)
-                        else { status = JSONObject().put("state", "signed_out"); credentialsLoaded = false; credentialEdited = false; credentialsExpanded = false; credentialDraftId = ""; credentialDraftHash = ""; codeDraft = ""; passwordDraft = ""; render() }
+                        else { resetBrowseState(); status = JSONObject().put("state", "signed_out"); credentialsLoaded = false; credentialEdited = false; credentialsExpanded = false; credentialDraftId = ""; credentialDraftHash = ""; codeDraft = ""; passwordDraft = ""; render() }
                     }
                 }
             }.show()
@@ -1258,7 +1353,7 @@ class MainActivity : AppCompatActivity() {
         "code" -> "等待验证码"
         "password" -> "等待两步验证"
         "connecting" -> "正在连接 Telegram"
-        "offline" -> "网络中断，正在重连"
+        "offline", "reconnecting" -> "网络中断，正在重连"
         "expired" -> "登录已失效"
         "signed_out" -> "尚未登录 Telegram"
         else -> app.startupError ?: "正在准备播放内核"
@@ -1309,6 +1404,6 @@ class MainActivity : AppCompatActivity() {
 
     companion object {
         private const val PAGE_SIZE = 50
-        private val AUTHENTICATED_PHASES = setOf("ready", "connecting", "offline", "expired")
+        private val AUTHENTICATED_PHASES = setOf("ready", "connecting", "reconnecting", "offline", "expired")
     }
 }

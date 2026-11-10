@@ -50,6 +50,10 @@ func (e *Engine) ScanPage(channelID, offsetID, minID int64) (string, error) {
 	ctx, cancel := context.WithTimeout(e.ctx, 60*time.Second)
 	defer cancel()
 	e.mu.Lock()
+	if e.scanCancelled || e.closed {
+		e.mu.Unlock()
+		return "", safeError(context.Canceled)
+	}
 	e.scanCancel = cancel
 	e.scanning = true
 	e.mu.Unlock()
@@ -60,7 +64,7 @@ func (e *Engine) ScanPage(channelID, offsetID, minID int64) (string, error) {
 	}
 	rows := make([]video, 0, len(page.Items))
 	for _, it := range page.Items {
-		rows = append(rows, video{fmt.Sprintf("%d_%d", it.ChannelID, it.MessageID), it.ChannelID, it.MessageID, it.Name, it.Size, it.MIME, it.Date})
+		rows = append(rows, mobileVideo(it))
 	}
 	return marshal(map[string]any{"items": rows, "next_id": page.NextID, "newest_id": page.NewestID, "done": page.Done, "messages": page.Messages}), nil
 }
@@ -72,10 +76,29 @@ func (e *Engine) RegisterVideo(payload string) error {
 		return errors.New("媒体索引无效")
 	}
 	e.mu.Lock()
-	defer e.mu.Unlock()
 	if e.closed {
+		e.mu.Unlock()
 		return errors.New("播放服务已关闭")
 	}
+	previous, exists := e.items[v.Key]
+	if !exists {
+		for i, key := range e.itemOrder {
+			if key == v.Key {
+				e.itemOrder = append(e.itemOrder[:i], e.itemOrder[i+1:]...)
+				break
+			}
+		}
+		// long: 只为近期播放保留注册元数据，长期使用不能把整个媒体库逐步留在 Go 内存中。
+		if len(e.itemOrder) >= 128 {
+			delete(e.items, e.itemOrder[0])
+			e.itemOrder = e.itemOrder[1:]
+		}
+		e.itemOrder = append(e.itemOrder, v.Key)
+	}
 	e.items[v.Key] = v
+	e.mu.Unlock()
+	if exists && (previous.DocumentID != v.DocumentID || previous.Size != v.Size) {
+		e.resolved.Invalidate(v.Key)
+	}
 	return nil
 }

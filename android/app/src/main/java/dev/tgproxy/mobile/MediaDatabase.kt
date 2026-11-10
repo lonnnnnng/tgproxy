@@ -7,12 +7,13 @@ import android.database.sqlite.SQLiteOpenHelper
 import org.json.JSONArray
 import org.json.JSONObject
 
-class MediaDatabase(context: Context, name: String = "media.db") : SQLiteOpenHelper(context, name, null, 2) {
+class MediaDatabase(context: Context, name: String = "media.db") : SQLiteOpenHelper(context, name, null, 3) {
     init { setWriteAheadLoggingEnabled(true) }
     override fun onCreate(db: SQLiteDatabase) {
         db.execSQL("CREATE TABLE videos (key TEXT PRIMARY KEY, channel_id INTEGER NOT NULL, name TEXT NOT NULL, payload TEXT NOT NULL, date INTEGER NOT NULL)")
         db.execSQL("CREATE TABLE channels (id INTEGER PRIMARY KEY, payload TEXT NOT NULL)")
         db.execSQL("CREATE TABLE playback (key TEXT PRIMARY KEY, position INTEGER NOT NULL, updated INTEGER NOT NULL DEFAULT 0)")
+        db.execSQL("CREATE TABLE metadata (key TEXT PRIMARY KEY, value TEXT NOT NULL)")
         createIndexes(db)
     }
     private fun createIndexes(db: SQLiteDatabase) {
@@ -44,6 +45,7 @@ class MediaDatabase(context: Context, name: String = "media.db") : SQLiteOpenHel
             }
             createIndexes(db)
         }
+        if (oldVersion < 3) db.execSQL("CREATE TABLE metadata (key TEXT PRIMARY KEY, value TEXT NOT NULL)")
     }
     private fun putChannel(db: SQLiteDatabase, channel: JSONObject) {
         check(db.insertWithOnConflict("channels", null, ContentValues().apply {
@@ -75,11 +77,12 @@ class MediaDatabase(context: Context, name: String = "media.db") : SQLiteOpenHel
             db.setTransactionSuccessful()
         } finally { db.endTransaction() }
     }
-    fun applyPage(channelID: Long, page: JSONObject, refresh: Boolean) {
+    fun applyPage(channelID: Long, page: JSONObject, refresh: Boolean): Long {
         val db = writableDatabase
         db.beginTransaction()
         try {
             val channel = channel(channelID) ?: error("频道已移除")
+            val before = count(channelID)
             putVideos(db, page.getJSONArray("items"), channelID)
             val newest = page.getLong("newest_id")
             if (refresh) {
@@ -99,7 +102,10 @@ class MediaDatabase(context: Context, name: String = "media.db") : SQLiteOpenHel
             }
             channel.put("updated", System.currentTimeMillis())
             putChannel(db, channel)
+            // long: 以已提交的新主键数量反馈新增，重试返回的重复视频不能再次计数。
+            val added = count(channelID) - before
             db.setTransactionSuccessful()
+            return added
         } finally { db.endTransaction() }
     }
     fun channels(): JSONArray = readableDatabase.rawQuery("SELECT payload FROM channels ORDER BY id", null).use {
@@ -125,35 +131,76 @@ class MediaDatabase(context: Context, name: String = "media.db") : SQLiteOpenHel
     fun videos(search: String = "", offset: Int = 0, limit: Int = 50, channelID: Long = 0, recent: Boolean = false, sort: String = "newest"): JSONArray {
         val term = "%" + search.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%"
         // long: LIKE 通配符由应用转义，用户可按字面搜索带下划线和百分号的文件名。
+        // long: 频道过滤单独生成条件才能使用频道索引；用户选定的排序必须是主排序。
+        val arguments = mutableListOf(term)
+        val filter = if (channelID > 0) { arguments.add(channelID.toString()); " AND v.channel_id=?" } else ""
+        val order = when (sort) { "watched" -> if (recent) "p.updated DESC,v.key" else "v.date DESC,v.key"; "oldest" -> "v.date ASC,v.key"; "name" -> "v.name COLLATE NOCASE,v.key"; else -> "v.date DESC,v.key" }
         val sql = "SELECT v.payload FROM videos v " + (if (recent) "JOIN playback p ON p.key=v.key " else "") +
-            "WHERE v.name LIKE ? ESCAPE '\\' AND (CAST(? AS INTEGER)=0 OR v.channel_id=?) ORDER BY " +
-            (if (recent) "p.updated DESC," else "") +
-            (when (sort) { "oldest" -> "v.date ASC,v.key"; "name" -> "v.name COLLATE NOCASE,v.key"; else -> "v.date DESC,v.key" }) + " LIMIT ? OFFSET ?"
-        return readableDatabase.rawQuery(sql, arrayOf(term, channelID.toString(), channelID.toString(), limit.coerceIn(1, 1000).toString(), offset.coerceAtLeast(0).toString())).use {
+            "WHERE v.name LIKE ? ESCAPE '\\'" + filter + " ORDER BY $order LIMIT ? OFFSET ?"
+        arguments.add(limit.coerceIn(1, 1000).toString()); arguments.add(offset.coerceAtLeast(0).toString())
+        return readableDatabase.rawQuery(sql, arguments.toTypedArray()).use {
             JSONArray().apply { while (it.moveToNext()) put(JSONObject(it.getString(0))) }
         }
-    }
-    fun continueWatching(limit: Int = 2): JSONArray = readableDatabase.rawQuery(
-        "SELECT v.payload,p.position FROM videos v JOIN playback p ON p.key=v.key WHERE p.position>0 ORDER BY p.updated DESC,v.key LIMIT ?",
-        arrayOf(limit.coerceIn(1, 10).toString())).use { cursor ->
-        // long: 最近播放包含已经看完的视频，继续观看只选仍有断点的条目。
-        JSONArray().apply { while (cursor.moveToNext()) put(JSONObject(cursor.getString(0)).put("position", cursor.getLong(1))) }
     }
     fun video(key: String): JSONObject? = readableDatabase.rawQuery("SELECT payload FROM videos WHERE key=?", arrayOf(key)).use {
         if (it.moveToFirst()) JSONObject(it.getString(0)) else null
     }
-    fun count(channelID: Long = 0): Long = readableDatabase.rawQuery("SELECT COUNT(*) FROM videos WHERE CAST(? AS INTEGER)=0 OR channel_id=?", arrayOf(channelID.toString(), channelID.toString())).use { it.moveToFirst(); it.getLong(0) }
+    fun count(channelID: Long = 0): Long = readableDatabase.rawQuery(if (channelID > 0) "SELECT COUNT(*) FROM videos WHERE channel_id=?" else "SELECT COUNT(*) FROM videos", if (channelID > 0) arrayOf(channelID.toString()) else null).use { it.moveToFirst(); it.getLong(0) }
+    fun ownerID(): Long = readableDatabase.rawQuery("SELECT value FROM metadata WHERE key='account_id'", null).use { if (it.moveToFirst()) it.getString(0).toLongOrNull() ?: 0 else 0 }
+    fun bindOwner(id: Long) {
+        require(id > 0)
+        val owner = ownerID(); require(owner == 0L || owner == id) { "当前账号与本机索引不一致" }
+        writableDatabase.insertWithOnConflict("metadata", null, ContentValues().apply { put("key", "account_id"); put("value", id.toString()) }, SQLiteDatabase.CONFLICT_REPLACE)
+    }
+    fun recheckBatch(channelID: Long, after: String = ""): JSONArray = readableDatabase.rawQuery("SELECT payload FROM videos WHERE channel_id=? AND key>? ORDER BY key LIMIT 100", arrayOf(channelID.toString(), after)).use { cursor ->
+        JSONArray().apply { while (cursor.moveToNext()) put(JSONObject(cursor.getString(0))) }
+    }
+    fun applyRecheck(channelID: Long, requested: JSONArray, result: JSONObject, lastKey: String) {
+        val expected = (0 until requested.length()).map { requested.getLong(it) }.toSet()
+        val items = result.getJSONArray("items"); val missing = result.getJSONArray("missing_ids")
+        val actual = (0 until items.length()).map { items.getJSONObject(it).getLong("message_id") } + (0 until missing.length()).map { missing.getLong(it) }
+        require(actual.size == actual.toSet().size && actual.toSet() == expected) { "校验结果不完整，保留本机索引" }
+        val db = writableDatabase; db.beginTransaction()
+        try {
+            val channel = channel(channelID) ?: error("频道已移除")
+            for (i in 0 until items.length()) {
+                val item = items.getJSONObject(i); val previous = video(item.getString("key"))
+                // long: 同一消息换片后旧断点不再适用，但改名和元数据刷新保留原播放位置。
+                if (previous != null && previous.optLong("document_id") > 0 && previous.optLong("document_id") != item.optLong("document_id")) db.delete("playback", "key=?", arrayOf(item.getString("key")))
+            }
+            putVideos(db, items, channelID)
+            for (i in 0 until missing.length()) {
+                val key = "${channelID}_${missing.getLong(i)}"
+                db.delete("playback", "key=?", arrayOf(key)); db.delete("videos", "key=? AND channel_id=?", arrayOf(key, channelID.toString()))
+            }
+            result.optString("title").takeIf { it.isNotBlank() }?.let { channel.put("title", it) }
+            channel.put("recheck_key", lastKey); putChannel(db, channel)
+            db.setTransactionSuccessful()
+        } finally { db.endTransaction() }
+    }
+    fun completeRecheck(channelID: Long) {
+        val ch = channel(channelID) ?: return
+        ch.remove("recheck_key"); ch.put("checked", System.currentTimeMillis()); putChannel(writableDatabase, ch)
+    }
     fun position(key: String): Long = readableDatabase.rawQuery("SELECT position FROM playback WHERE key=?", arrayOf(key)).use { if (it.moveToFirst()) it.getLong(0) else 0L }
-    fun savePosition(key: String, position: Long) {
-        writableDatabase.insertWithOnConflict("playback", null, ContentValues().apply {
-            put("key", key); put("position", position.coerceAtLeast(0)); put("updated", System.currentTimeMillis())
-        }, SQLiteDatabase.CONFLICT_REPLACE)
+    fun savePosition(key: String, position: Long, expectedDocument: Long? = null, expectedOwner: Long? = null) {
+        val db = writableDatabase; db.beginTransaction()
+        try {
+            val row = video(key)
+            // long: 校验换片、删除或退出账号后，仍存活的播放器不能把旧文件断点写回新索引。
+            if (row != null && (expectedDocument == null || row.optLong("document_id") == expectedDocument) && (expectedOwner == null || ownerID() == expectedOwner)) {
+                db.insertWithOnConflict("playback", null, ContentValues().apply {
+                    put("key", key); put("position", position.coerceAtLeast(0)); put("updated", System.currentTimeMillis())
+                }, SQLiteDatabase.CONFLICT_REPLACE)
+            }
+            db.setTransactionSuccessful()
+        } finally { db.endTransaction() }
     }
     fun clear() {
         val db = writableDatabase
         db.beginTransaction()
         try {
-            for (table in listOf("videos", "channels", "playback")) db.delete(table, null, null)
+            for (table in listOf("videos", "channels", "playback", "metadata")) db.delete(table, null, null)
             // long: 升级保留的旧表不参与业务，但退出账号时也要清掉旧索引，避免残留上一账号信息。
             db.rawQuery("SELECT name FROM sqlite_master WHERE type='table' AND name='channel'", null).use { if (it.moveToFirst()) db.delete("channel", null, null) }
             db.setTransactionSuccessful()

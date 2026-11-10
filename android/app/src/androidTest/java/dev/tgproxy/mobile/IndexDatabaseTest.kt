@@ -79,7 +79,7 @@ class IndexDatabaseTest {
         assertEquals(count, app.database.count(id))
         app.prepareScan()
     }
-    @Test fun publicationSortAndContinueWatchingUseTheirOwnData() {
+    @Test fun publicationSortAndPlaybackHistoryKeepTheirOwnData() {
         val name = "presentation-${UUID.randomUUID()}.db"
         try { MediaDatabase(context, name).use { db ->
             db.addChannel(channel(1))
@@ -93,9 +93,67 @@ class IndexDatabaseTest {
             assertEquals(1704067200L, db.video("1_20")!!.getLong("date"))
             db.savePosition("1_20", 12000); db.savePosition("1_10", 0)
             assertEquals(2, db.videos(recent = true).length())
-            assertEquals(1, db.continueWatching().length())
-            assertEquals("1_20", db.continueWatching().getJSONObject(0).getString("key"))
-            assertEquals(12000L, db.continueWatching().getJSONObject(0).getLong("position"))
+            assertEquals(12000L, db.position("1_20"))
+            assertEquals(0L, db.position("1_10"))
+        } } finally { context.deleteDatabase(name) }
+    }
+
+    @Test fun recheckIsAtomicAndOwnerCannotChange() {
+        val name = "recheck-${UUID.randomUUID()}.db"
+        try { MediaDatabase(context, name).use { db ->
+            db.bindOwner(11)
+            try { db.bindOwner(22); fail("different account took over index") } catch (_: IllegalArgumentException) { }
+            assertEquals(11L, db.ownerID())
+            db.addChannel(channel(1))
+            db.applyPage(1, page(0, 30, true, video(1, 10).put("document_id", 1), video(1, 20).put("document_id", 2), video(1,30)), false)
+            db.savePosition("1_10", 9000); db.savePosition("1_20", 8000)
+            val result = JSONObject().put("items", JSONArray().put(video(1,10,"renamed.mp4").put("document_id",3)))
+                .put("missing_ids", JSONArray().put(20)).put("title", "新频道名")
+            try { db.applyRecheck(1, JSONArray().put(10).put(20).put(30), result, "1_30"); fail("partial result accepted") } catch (_: IllegalArgumentException) { }
+            assertEquals(3L, db.count()); assertEquals(9000L, db.position("1_10"))
+            db.applyRecheck(1, JSONArray().put(10).put(20), result, "1_20")
+            assertEquals(2L, db.count()); assertNull(db.video("1_20")); assertEquals(0L, db.position("1_10"))
+            db.savePosition("1_10", 99999, expectedDocument = 1, expectedOwner = 11)
+            db.savePosition("1_20", 99999, expectedDocument = 2, expectedOwner = 11)
+            assertEquals(0L, db.position("1_10")); assertEquals(0L, db.position("1_20"))
+            db.savePosition("1_10", 1234, expectedDocument = 3, expectedOwner = 11)
+            assertEquals(1234L, db.position("1_10"))
+            assertEquals("renamed.mp4", db.video("1_10")!!.getString("name"))
+            assertEquals("新频道名", db.channel(1)!!.getString("title"))
+            assertEquals("1_30", db.recheckBatch(1, "1_20").getJSONObject(0).getString("key"))
+            db.completeRecheck(1); assertFalse(db.channel(1)!!.has("recheck_key"))
+        } } finally { context.deleteDatabase(name) }
+    }
+    @Test fun recentSortHonorsSelectionAndChannelUsesIndex() {
+        val name = "sort-${UUID.randomUUID()}.db"
+        try { MediaDatabase(context, name).use { db ->
+            db.addChannel(channel(1))
+            db.applyPage(1, page(0,20,true,video(1,10,"A.mp4"),video(1,20,"B.mp4")),false)
+            db.savePosition("1_20",1000); db.savePosition("1_10",1000)
+            db.writableDatabase.execSQL("UPDATE playback SET updated=CASE key WHEN '1_20' THEN 200 ELSE 100 END")
+            assertEquals("1_20",db.videos(recent=true,sort="watched").getJSONObject(0).getString("key"))
+            assertEquals("1_10",db.videos(recent=true,sort="oldest").getJSONObject(0).getString("key"))
+            assertEquals("1_10",db.videos(recent=true,sort="name").getJSONObject(0).getString("key"))
+            db.readableDatabase.rawQuery("EXPLAIN QUERY PLAN SELECT payload FROM videos WHERE channel_id=? ORDER BY date DESC LIMIT 51",arrayOf("1")).use { cursor ->
+                val plans=mutableListOf<String>();while(cursor.moveToNext())plans.add(cursor.getString(3))
+                assertTrue(plans.any{it.contains("SEARCH") && it.contains("video_channel")})
+            }
+        } } finally { context.deleteDatabase(name) }
+    }
+
+    @Test fun largeLibraryChannelQueriesStayBounded() {
+        val name="large-${UUID.randomUUID()}.db"
+        try { MediaDatabase(context,name).use { db ->
+            db.addChannel(channel(1));db.addChannel(channel(2))
+            val items=JSONArray()
+            repeat(20000){ items.put(video(1,it.toLong()+1,"bulk_${it}.mp4")) }
+            db.applyPage(1,page(0,20000,true).put("items",items),false)
+            db.applyPage(2,page(0,2,true,video(2,1),video(2,2)),false)
+            val start=android.os.SystemClock.elapsedRealtime()
+            assertEquals(2,db.videos(channelID=2,limit=51).length())
+            assertEquals(2L,db.count(2));assertEquals(20002L,db.count())
+            val elapsed=android.os.SystemClock.elapsedRealtime()-start
+            InstrumentationRegistry.getInstrumentation().sendStatus(0,android.os.Bundle().apply { putString("stream","synthetic_rows=20002 channel_query_and_counts_ms=$elapsed\n") })
         } } finally { context.deleteDatabase(name) }
     }
 

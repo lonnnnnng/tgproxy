@@ -124,6 +124,7 @@ func TestExpiredReferenceRefreshAndIdentity(t *testing.T) {
 	if n, err := src.Chunk(context.Background(), 0, make([]byte, 4096)); (err != nil && !errors.Is(err, io.EOF)) || n != 4096 {
 		t.Fatalf("n=%d err=%v", n, err)
 	}
+	src = c.ChunkSource(&FileHandle{Size: 4096, DC: 1, ChannelID: 1, MessageID: 1, Loc: &tg.InputDocumentFileLocation{ID: 1}}, 4096)
 	src.refresh = func(context.Context, int64, int) (*FileHandle, error) {
 		return &FileHandle{Size: 4096, Loc: &tg.InputDocumentFileLocation{ID: 2}}, nil
 	}

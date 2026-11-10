@@ -8,4 +8,4 @@ TGProxy Android 在 ARM64 手机上使用 Telegram 用户账号索引所选频�
 
 视频库支持跨频道搜索、频道筛选、分页和最近播放。MediaSessionService 在播放器页面退出后维持当前播放，系统通知提供媒体控制，进度定期保存；另提供明确标注的本地测试片。
 
-Android 0.4.0 面向 ARM64 手机。Debug 包沿用 `.poc` application ID 以原地升级并保留验证数据；Release 使用稳定 application ID `dev.tgproxy.mobile`，首次安装会形成独立应用，需要重新登录。版本发布使用本地签名并复用同一密钥；公开分发前应在 Telegram 官方 `my.telegram.org` 申请自己的 API ID/Hash；项目预设值只适合私下验证，不作为公开发行凭证。
+Android 0.5.0 面向 ARM64 手机。Debug 包沿用 `.poc` application ID 以原地升级并保留验证数据；Release 使用稳定 application ID `dev.tgproxy.mobile`，首次安装会形成独立应用，需要重新登录。版本发布使用本地签名并复用同一密钥；公开分发前应在 Telegram 官方 `my.telegram.org` 申请自己的 API ID/Hash；项目预设值只适合私下验证，不作为公开发行凭证。

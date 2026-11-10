@@ -4,12 +4,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"strings"
-	"tgproxy/internal/media"
 
 	"github.com/gotd/td/telegram/query/dialogs"
 	"github.com/gotd/td/tg"
-	"github.com/iyear/tdl/core/tmedia"
 )
 
 type JoinedChannel struct {
@@ -105,24 +102,9 @@ func historyPage(ctx context.Context, api historyAPI, peer tg.InputPeerClass, ch
 		if !ok {
 			continue
 		}
-		md, ok := tmedia.GetMedia(m)
-		if !ok {
-			continue
+		if item, ok := videoMessage(channelID, m); ok {
+			page.Items = append(page.Items, item)
 		}
-		mime := ""
-		if mm, ok := m.Media.(*tg.MessageMediaDocument); ok {
-			if doc, ok := mm.Document.(*tg.Document); ok {
-				mime = doc.MimeType
-			}
-		}
-		if !media.IsVideo(md.Name) && !strings.HasPrefix(mime, "video/") {
-			continue
-		}
-		name := md.Name
-		if !media.IsVideo(name) {
-			name += ".mp4"
-		}
-		page.Items = append(page.Items, MediaItem{channelID, m.ID, name, md.Size, mime, md.Date})
 	}
 	if !page.Done && (page.NextID == 0 || (offset > 0 && page.NextID >= offset)) {
 		return HistoryPage{}, errors.New("频道分页游标未推进")

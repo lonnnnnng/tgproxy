@@ -117,6 +117,40 @@ class CorePlaybackTest {
         }
     }
 
+    @Test fun sameVideoExplicitOpenResumesButRebindDoesNot() {
+        await { app.engine != null }
+        val intent = Intent(context, PlayerActivity::class.java).putExtra("validation",true)
+        ActivityScenario.launch<PlayerActivity>(intent).use { scenario ->
+            fun state(test: (Player)->Boolean):Boolean { var yes=false;scenario.onActivity{yes=it.testPlayer()?.let(test)?:false};return yes }
+            await { state{it.isPlaying} }
+            scenario.onActivity { it.testPlayer()!!.pause();it.testPlayer()!!.seekTo(12000) }
+            scenario.moveToState(Lifecycle.State.CREATED);scenario.moveToState(Lifecycle.State.RESUMED)
+            await { state{!it.playWhenReady && it.currentPosition in 11900..12100} }
+        }
+        ActivityScenario.launch<PlayerActivity>(intent).use { scenario ->
+            var resumed=false
+            await { scenario.onActivity{resumed=it.testPlayer()?.let{p->p.isPlaying && p.currentPosition>=12000}==true};resumed }
+        }
+    }
+    @Test fun failedOpenIsReportedAndIdleCanRetry() {
+        await { app.engine != null }
+        ActivityScenario.launch<PlayerActivity>(Intent(context,PlayerActivity::class.java).putExtra("validation",true)).use { scenario ->
+            fun state(test:(Player)->Boolean):Boolean{var yes=false;scenario.onActivity{yes=it.testPlayer()?.let(test)?:false};return yes}
+            await { state{it.isPlaying} }
+            scenario.onActivity { PlaybackService.testPlayer()!!.stop();PlaybackService.togglePlayback() }
+            await { state{it.isPlaying} }
+        }
+        // long: 不存在的本机主键无需访问 Telegram，即可验证打开失败会回传且不会误播旧视频。
+        ActivityScenario.launch<PlayerActivity>(Intent(context,PlayerActivity::class.java).putExtra("key","999999999_999999999")).use { scenario ->
+            var visible=false
+            await { scenario.onActivity { activity ->
+                fun text(v:android.view.View):Boolean = (v is android.widget.TextView && v.text.toString().contains("点击重试")) || (v is android.view.ViewGroup && (0 until v.childCount).any { text(v.getChildAt(it)) })
+                visible=text(activity.window.decorView)
+            };visible }
+            scenario.onActivity { assertTrue(it.testPlayer()?.isPlaying != true) }
+        }
+    }
+
     @Test fun sessionIsEncryptedAndIndexSurvivesReopen() {
         // long: 使用独立测试文件与数据库，设备验证不能覆盖用户后来登录的真实会话和索引。
         val vault = SessionVault(context, "validation-vault.enc", "tgproxy-validation-key")

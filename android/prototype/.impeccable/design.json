@@ -42,9 +42,8 @@
     "channelStatusCard": false,
     "channelAvatarSize": 30,
     "videoViews": {
-      "list": "compact text-only rows including publication date and continue-watching"
+      "list": "compact text-only rows including publication date"
     },
-    "videoListRowMinHeight": 55,
-    "continueRowsMax": 2
+    "videoListRowMinHeight": 55
   }
 }

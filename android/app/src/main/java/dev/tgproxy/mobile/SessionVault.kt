@@ -45,4 +45,11 @@ class SessionVault(context: Context, name: String = "telegram-state.enc", privat
     }
 
     @Synchronized fun clear() { file.delete() }
+
+    @Synchronized fun reset(value: JSONObject) {
+        // long: 用户确认重置授权后，失效的 Keystore 别名也需重建，否则新登录仍无法保存。
+        val store = KeyStore.getInstance("AndroidKeyStore").apply { load(null) }
+        if (store.containsAlias(alias)) store.deleteEntry(alias)
+        write(value)
+    }
 }

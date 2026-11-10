@@ -6,7 +6,7 @@
   <meta name="color-scheme" content="light dark">
   <link rel="icon" type="image/svg+xml" href="assets/favicon.svg">
   <title>TGProxy · 视频库交互原型</title>
-  <link rel="stylesheet" href="prototype.css?v=compact-list-2">
+  <link rel="stylesheet" href="prototype.css?v=inline-channel-update-1">
 </head>
 <body>
   <aside class="workbench-nav" aria-label="原型导航">
@@ -35,11 +35,10 @@
               <div class="library-tabs"><div class="text-tabs" role="tablist" aria-label="视频范围"><button class="selected" role="tab" aria-selected="true" data-scope="all">全部视频</button><button role="tab" aria-selected="false" data-scope="recent">最近播放</button></div><button class="filter-control" id="filter-button"><span data-icon="filter"></span><span id="filter-label">所有频道</span><span class="tiny-icon" data-icon="chevron-down"></span></button></div>
             </div>
             <div class="screen-scroll" id="library-scroll">
-              <section class="continue-section" id="continue-section"><div class="section-heading"><h3>继续观看</h3></div><div class="continue-track" id="continue-track"></div></section>
               <section class="all-section"><div class="section-heading resources-heading"><h3 id="results-heading">视频列表 <span id="results-count">12 部</span></h3><div class="section-actions"><button class="icon-button" id="sort-button" aria-label="排序视频"><span data-icon="sort"></span></button></div></div><div class="video-grid" id="video-grid"></div><div class="empty-state" id="empty-state" hidden><span class="empty-icon" data-icon="search"></span><h3>没有找到这个视频</h3><p>试试更短的名称，或切换到所有频道。</p><button class="primary-button" id="reset-search">清除筛选</button></div><p class="list-end" id="list-end">已显示全部视频</p></section>
             </div>
           </section>
-          <section class="screen" id="channels-screen" aria-label="频道管理"><div class="channel-toolbar"><span><span id="channel-count">4</span> 个频道 <span class="count-separator">/</span> <span id="channel-total">12 个视频</span></span><div class="channel-toolbar-actions"><button class="icon-button" id="sync-all" aria-label="同步全部频道" title="同步全部频道"><span data-icon="refresh"></span></button><button class="compact-add" id="add-channel"><span data-icon="plus"></span>添加频道</button></div></div><div class="screen-scroll channel-scroll"><div id="channel-list"></div><div class="quiet-tip"><span data-icon="info"></span><p>频道里的视频会保存在本机索引中。移除频道不会退出 Telegram 频道。</p></div></div></section>
+          <section class="screen" id="channels-screen" aria-label="频道管理"><div class="channel-toolbar"><span><span id="channel-count">4</span> 个频道 <span class="count-separator">/</span> <span id="channel-total">12 个视频</span></span><div class="channel-toolbar-actions"><button class="icon-button" id="sync-all" aria-label="更新全部频道" title="更新全部频道"><span data-icon="refresh"></span></button><button class="compact-add" id="add-channel"><span data-icon="plus"></span>添加频道</button></div></div><div class="screen-scroll channel-scroll"><div id="channel-list"></div><div class="quiet-tip"><span data-icon="info"></span><p>频道里的视频会保存在本机索引中。移除频道不会退出 Telegram 频道。</p></div></div></section>
           <section class="screen" id="account-screen" aria-label="账号与偏好"><div class="screen-scroll account-scroll"><div class="profile"><div class="profile-avatar">L</div><div><h3>Long</h3><p>Telegram 已授权</p></div><span data-icon="shield"></span></div><div class="settings-section"><h3>播放与显示</h3><button class="settings-row" id="appearance-setting"><span class="setting-symbol" data-icon="sun"></span><span>外观</span><small id="appearance-value">浅色</small><span data-icon="chevron-right"></span></button><button class="settings-row" id="default-speed-setting"><span class="setting-symbol" data-icon="speed"></span><span>默认播放速度</span><small id="default-speed-value">1.0×</small><span data-icon="chevron-right"></span></button><button class="settings-row" id="gesture-help"><span class="setting-symbol" data-icon="hand"></span><span>播放手势</span><small>操作说明</small><span data-icon="chevron-right"></span></button></div><div class="settings-section"><h3>账号与数据</h3><button class="settings-row" id="account-info"><span class="setting-symbol" data-icon="key"></span><span>Telegram 授权</span><small>已连接</small><span data-icon="chevron-right"></span></button><button class="settings-row" id="storage-info"><span class="setting-symbol" data-icon="database"></span><span>本机数据</span><small>12 个视频</small><span data-icon="chevron-right"></span></button></div><p class="account-footer">TGProxy · 交互原型</p></div></section>
           <section class="screen detail-screen" id="detail-screen" aria-label="视频详情"><div class="screen-scroll" id="detail-scroll"></div></section>
           <section class="player-screen" id="player-screen" aria-label="播放器" hidden>
@@ -59,6 +58,6 @@
     </div>
     <p class="preview-footer">交互原型 · 示例数据与播放画面<span>支持浅色 / 深色</span></p>
   </main>
-  <script src="prototype.js?v=compact-list-2"></script>
+  <script src="prototype.js?v=inline-channel-update-1"></script>
 </body>
 </html>

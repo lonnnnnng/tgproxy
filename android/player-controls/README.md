@@ -1,6 +1,6 @@
 # Media3 播放控制组件
 
-`player-controls` 是可复用的 Android Views library，接收 Media3 `Player`，支持 ExoPlayer 和 MediaController。组件不依赖 TGProxy、Telegram、数据库、媒体 URL 或账号凭证。当前随本仓库维护，[Android 0.4.0 发行附件](https://github.com/lonnnnnng/tgproxy/releases/tag/android-v0.4.0) 提供 AAR，尚未发布独立 Maven/JitPack 坐标。
+`player-controls` 是可复用的 Android Views library，接收 Media3 `Player`，支持 ExoPlayer 和 MediaController。组件不依赖 TGProxy、Telegram、数据库、媒体 URL 或账号凭证。当前随本仓库维护，[Android 0.5.0 发行附件](https://github.com/lonnnnnng/tgproxy/releases/tag/android-v0.5.0) 提供 AAR，尚未发布独立 Maven/JitPack 坐标。
 
 ## 能力
 

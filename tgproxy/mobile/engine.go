@@ -4,6 +4,7 @@ package mobilecore
 import (
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/base64"
 	"encoding/hex"
@@ -27,38 +28,41 @@ import (
 )
 
 type video struct {
-	Key       string `json:"key"`
-	ChannelID int64  `json:"channel_id"`
-	MessageID int    `json:"message_id"`
-	Name      string `json:"name"`
-	Size      int64  `json:"size"`
-	MIME      string `json:"mime"`
-	Date      int64  `json:"date"`
+	Key        string `json:"key"`
+	ChannelID  int64  `json:"channel_id"`
+	MessageID  int    `json:"message_id"`
+	Name       string `json:"name"`
+	Size       int64  `json:"size"`
+	MIME       string `json:"mime"`
+	Date       int64  `json:"date"`
+	DocumentID int64  `json:"document_id,omitempty"`
 }
 
 // Engine 只通过 JNI 暴露控制接口；HTTP 仅提供经过随机令牌鉴权的媒体读取。
 type Engine struct {
-	mu          sync.Mutex
-	op          sync.Mutex
-	ctx         context.Context
-	cancel      context.CancelFunc
-	wg          sync.WaitGroup
-	client      *telegram.Client
-	cache       *stream.Cache
-	resolved    *stream.CachedSource
-	server      *http.Server
-	base, token string
-	session     []byte
-	state       string
-	message     string
-	closed      bool
-	scanning    bool
-	found       int
-	items       map[string]video
-	scanCancel  context.CancelFunc
-	fixture     []byte
-	requests    atomic.Int64
-	ranges      atomic.Int64
+	mu            sync.Mutex
+	op            sync.Mutex
+	ctx           context.Context
+	cancel        context.CancelFunc
+	wg            sync.WaitGroup
+	client        *telegram.Client
+	cache         *stream.Cache
+	resolved      *stream.CachedSource
+	server        *http.Server
+	base, token   string
+	session       []byte
+	state         string
+	message       string
+	closed        bool
+	scanning      bool
+	found         int
+	items         map[string]video
+	scanCancel    context.CancelFunc
+	scanCancelled bool
+	itemOrder     []string
+	fixture       []byte
+	requests      atomic.Int64
+	ranges        atomic.Int64
 }
 
 // NewEngine 建立本机入口；restoredSession 由 Android Keystore 解密后传入，不在 Go 侧落盘。
@@ -81,6 +85,9 @@ func NewEngine(appID int64, appHash, restoredSession string) (*Engine, error) {
 		sess, err = base64.StdEncoding.DecodeString(restoredSession)
 		if err != nil || len(sess) == 0 || len(sess) > 1<<20 {
 			return nil, errors.New("保存的会话无效，请重新登录")
+		}
+		if err = telegram.ValidateSession(sess); err != nil {
+			return nil, err
 		}
 	}
 	ctx, cancel := context.WithCancel(context.Background())
@@ -135,7 +142,17 @@ func (e *Engine) Status() string {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	hits, misses, used := e.cache.Stat()
-	return marshal(map[string]any{"state": e.state, "message": e.message, "connected": e.client.Connected(), "scanning": e.scanning, "found": e.found, "items": len(e.items), "cache_bytes": used, "hits": hits, "misses": misses, "requests": e.requests.Load(), "range_requests": e.ranges.Load()})
+	state := e.state
+	if (state == "code" || state == "password") && !e.client.LoginPending() {
+		e.state = "signed_out"
+		state = e.state
+		e.message = "登录已超时，请重新发送验证码"
+	}
+	if state == "ready" && !e.client.Connected() {
+		state = "reconnecting"
+	}
+	reconnects, migrations, references := e.client.Diagnostics()
+	return marshal(map[string]any{"state": state, "message": e.message, "connected": e.client.Connected(), "account_id": e.client.AccountID(), "scanning": e.scanning, "found": e.found, "items": len(e.items), "cache_bytes": used, "hits": hits, "misses": misses, "downloaded_bytes": e.cache.FetchedBytes.Load(), "fetch_errors": e.cache.FetchErrors.Load(), "last_failure": e.cache.LastFailure(), "reconnects": reconnects, "dc_migrations": migrations, "reference_refreshes": references, "requests": e.requests.Load(), "range_requests": e.ranges.Load()})
 }
 
 func (e *Engine) Session() string {
@@ -222,6 +239,10 @@ func (e *Engine) completeLogin() (string, error) {
 		return "", errors.New("登录未生成会话，请重新发送验证码")
 	}
 	e.mu.Lock()
+	if e.closed {
+		e.mu.Unlock()
+		return "", errors.New("播放服务已关闭")
+	}
 	e.session = sess
 	e.mu.Unlock()
 	e.beginConnection()
@@ -316,9 +337,28 @@ func (e *Engine) Scan(ref string, limit int64) (string, error) {
 func (e *Engine) CancelScan() {
 	e.mu.Lock()
 	defer e.mu.Unlock()
+	e.scanCancelled = true
 	if e.scanCancel != nil {
 		e.scanCancel()
 	}
+}
+
+// long: 扫描任务开始时重置取消标记，页间暂停也必须阻止下一页发出请求。
+func (e *Engine) PrepareScan() { e.mu.Lock(); defer e.mu.Unlock(); e.scanCancelled = false }
+func (e *Engine) RestartLogin() error {
+	if !e.op.TryLock() {
+		return errors.New("请等待当前操作结束")
+	}
+	defer e.op.Unlock()
+	e.mu.Lock()
+	blocked := e.closed || len(e.session) > 0
+	e.mu.Unlock()
+	if blocked {
+		return errors.New("请先退出当前登录状态")
+	}
+	e.client.CancelLogin()
+	e.setState("signed_out", "")
+	return nil
 }
 
 // UpdateScanProgress long: Android 在每个 SQLite 页事务后报告进度，取消时 UI 显示的是已持久化条目数。
@@ -423,6 +463,8 @@ func (e *Engine) resolve(ctx context.Context, key string) (stream.ChunkSource, i
 
 type memorySource struct{ data []byte }
 
+func (s memorySource) CacheKey() string { return fmt.Sprintf("fixture:%x", sha256.Sum256(s.data)) }
+
 func (s memorySource) Chunk(ctx context.Context, off int64, b []byte) (int64, error) {
 	if err := ctx.Err(); err != nil {
 		return 0, err
@@ -454,7 +496,7 @@ func safeError(err error) error {
 	if errors.Is(err, telegram.ErrNoLogin) {
 		return errors.New("登录已超时，请重新发送验证码")
 	}
-	if err.Error() == "验证码错误" || err.Error() == "验证码已过期，请重新发送" {
+	if err.Error() == "验证码错误" || err.Error() == "验证码已过期，请重新发送" || err.Error() == "两步验证密码错误" {
 		return errors.New(err.Error())
 	}
 	return errors.New("Telegram 操作失败，请确认网络和频道权限后重试")

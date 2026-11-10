@@ -49,6 +49,8 @@ type Cache struct {
 	cancel                     context.CancelFunc
 	fetchTimeout               time.Duration
 	Hits, Misses, BytesRead    atomic.Int64
+	FetchedBytes, FetchErrors  atomic.Int64
+	lastFailure                string
 }
 
 func NewCache(src ChunkSource, chunkSize, maxBytes int64, prefetch int) *Cache {
@@ -100,6 +102,9 @@ func (c *Cache) startLocked(src ChunkSource, key chunkKey, expected int64, slots
 	go func() {
 		defer cancel()
 		n, err := src.Chunk(ctx, key.Offset, e.data)
+		if n > 0 {
+			c.FetchedBytes.Add(n)
+		}
 		// long: 只有完整逻辑块能进入缓存，网络中断或提前 EOF 不能污染后续重试。
 		if n != expected && (err == nil || errors.Is(err, io.EOF)) {
 			err = io.ErrUnexpectedEOF
@@ -107,7 +112,21 @@ func (c *Cache) startLocked(src ChunkSource, key chunkKey, expected int64, slots
 		if n == expected && errors.Is(err, io.EOF) {
 			err = nil
 		}
+		if err != nil && !errors.Is(err, context.Canceled) {
+			c.FetchErrors.Add(1)
+		}
 		c.mu.Lock()
+		if err != nil && !errors.Is(err, context.Canceled) {
+			// long: 诊断只保存分类，不能把 Telegram 的原始错误或媒体标识暴露到界面。
+			switch {
+			case errors.Is(err, context.DeadlineExceeded):
+				c.lastFailure = "请求超时"
+			case errors.Is(err, io.ErrUnexpectedEOF):
+				c.lastFailure = "分块数据不完整"
+			default:
+				c.lastFailure = "下载失败，请检查连接或资源权限"
+			}
+		}
 		e.n, e.err, e.done = n, err, true
 		if c.inflight[key] == e {
 			delete(c.inflight, key)
@@ -232,6 +251,7 @@ func (c *Cache) Stat() (int64, int64, int64) {
 	defer c.mu.Unlock()
 	return c.Hits.Load(), c.Misses.Load(), c.size
 }
+func (c *Cache) LastFailure() string { c.mu.Lock(); defer c.mu.Unlock(); return c.lastFailure }
 func (c *Cache) WaitReady(key chunkKey) {
 	c.mu.Lock()
 	e := c.inflight[key]

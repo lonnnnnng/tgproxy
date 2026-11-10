@@ -23,6 +23,7 @@ class VideoDetailActivity : AppCompatActivity() {
     private val app get() = application as TgApplication
     private lateinit var content: LinearLayout
     private var video: JSONObject? = null
+    private val queries = java.util.concurrent.Executors.newSingleThreadExecutor()
     private var playButton: MaterialButton? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -46,11 +47,26 @@ class VideoDetailActivity : AppCompatActivity() {
         }, LinearLayout.LayoutParams(dp(48), dp(48)).apply { marginStart = dp(8) })
         content = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(20), dp(12), dp(20), dp(24)) }
         root.addView(ScrollView(this).apply { addView(content) }, LinearLayout.LayoutParams(-1, 0, 1f))
-        // long: 详情仅接收索引主键，展示时重新查本机数据库，避免 Intent 携带地址或账号凭据。
-        video = intent.getStringExtra("key")?.let(app.database::video)
-        val item = video
-        if (item == null) { content.addView(text("视频已从本机索引移除", 16)); return }
-        val channel = app.database.channel(item.optLong("channel_id"))?.optString("title") ?: "Telegram 频道"
+        content.addView(text("正在读取视频信息…", 13, true))
+        val key = intent.getStringExtra("key") ?: ""
+        queries.execute {
+            val loaded = runCatching {
+                val item = app.database.video(key)
+                Triple(item, item?.let { app.database.channel(it.optLong("channel_id"))?.optString("title") } ?: "Telegram 频道", item?.let { app.database.videos(limit = 5, channelID = it.optLong("channel_id")) } ?: org.json.JSONArray())
+            }
+            runOnUiThread {
+                if (!isDestroyed) {
+                    content.removeAllViews()
+                    loaded.onSuccess { (item, channel, related) ->
+                        video = item
+                        if (item == null) content.addView(text("视频已从本机索引移除", 16)) else renderVideo(root, item, channel, related)
+                    }.onFailure { content.addView(text("读取视频失败，请返回后重试", 14)) }
+                }
+            }
+        }
+    }
+
+    private fun renderVideo(root: View, item: JSONObject, channel: String, related: org.json.JSONArray) {
         content.addView(text(item.optString("name", "未命名视频"), 20).apply {
             typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
             setTextIsSelectable(true); setLineSpacing(dp(3).toFloat(), 1f)
@@ -64,7 +80,7 @@ class VideoDetailActivity : AppCompatActivity() {
         playButton = MaterialButton(this).apply {
             isAllCaps = false; setIconResource(R.drawable.ic_play)
             setOnClickListener {
-                if (app.engine?.let { JSONObject(it.status()).optBoolean("connected") } != true) {
+                if (!app.mediaReady() || app.engine?.let { JSONObject(it.status()).optBoolean("connected") } != true) {
                     Snackbar.make(root, "先连接 Telegram，再播放视频", Snackbar.LENGTH_LONG).show()
                 } else startActivity(Intent(this@VideoDetailActivity, PlayerActivity::class.java).putExtra("key", key).putExtra("title", item.optString("name")))
             }
@@ -79,7 +95,7 @@ class VideoDetailActivity : AppCompatActivity() {
                 finish()
             }
         }, LinearLayout.LayoutParams(-1, dp(48)).apply { topMargin = dp(6) })
-        val related = app.database.videos(limit = 5, channelID = item.optLong("channel_id"))
+        playButton?.text = "播放视频"; refreshPosition()
         val rows = (0 until related.length()).map(related::getJSONObject).filter { it.optString("key") != key }.take(4)
         if (rows.isNotEmpty()) {
             content.addView(text("同频道视频", 12, true).apply { setPadding(0, dp(28), 0, dp(8)) })
@@ -96,10 +112,14 @@ class VideoDetailActivity : AppCompatActivity() {
         }
     }
 
-    override fun onResume() {
-        super.onResume()
-        val position = video?.optString("key")?.let(app.database::position) ?: 0
-        playButton?.text = if (position > 0) "继续播放 · ${MediaPresentation.position(position)}" else "播放视频"
+    override fun onResume() { super.onResume(); refreshPosition() }
+    override fun onDestroy() { queries.shutdownNow(); super.onDestroy() }
+    private fun refreshPosition() {
+        val key = video?.optString("key") ?: return
+        queries.execute {
+            val position = app.database.position(key)
+            runOnUiThread { if (!isDestroyed) playButton?.text = if (position > 0) "继续播放 · ${MediaPresentation.position(position)}" else "播放视频" }
+        }
     }
     private fun metadata(label: String, value: String) {
         if (value.isBlank()) return

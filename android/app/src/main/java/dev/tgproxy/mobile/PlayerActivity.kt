@@ -23,6 +23,7 @@ import androidx.media3.common.Player
 import androidx.media3.common.Tracks
 import androidx.media3.session.MediaController
 import androidx.media3.session.SessionToken
+import androidx.media3.session.SessionResult
 import com.google.android.material.dialog.MaterialAlertDialogBuilder
 import com.google.common.util.concurrent.ListenableFuture
 
@@ -34,16 +35,20 @@ class PlayerActivity : AppCompatActivity() {
     private var controller: MediaController? = null
     private var future: ListenableFuture<MediaController>? = null
     private var key = ""
-    private var resumePosition = 0L
+    private var resumePosition = -1L
+    private var explicitOpen = true
+    private var openError: String? = null
+    private var opening = false
+    private var openRequest = 0
     private val validation get() = intent.getBooleanExtra("validation", false)
     private val listener = object : Player.Listener {
         override fun onPlaybackStateChanged(playbackState: Int) { updateNote() }
         override fun onTracksChanged(tracks: Tracks) { updateNote() }
         override fun onPlayerError(error: PlaybackException) { updateNote() }
         override fun onMediaMetadataChanged(mediaMetadata: MediaMetadata) {
-            view.title = mediaMetadata.title ?: intent.getStringExtra("title") ?: "正在播放"
-            view.source = mediaMetadata.artist ?: ""
+            bindDisplay()
         }
+        override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) { bindDisplay() }
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -54,7 +59,9 @@ class PlayerActivity : AppCompatActivity() {
             isAppearanceLightNavigationBars = false
         }
         key = if (validation) "validation" else intent.getStringExtra("key") ?: ""
-        resumePosition = savedInstanceState?.getLong("position") ?: if (validation || key.isEmpty()) 0L else app.database.position(key)
+        resumePosition = savedInstanceState?.getLong("position", -1L) ?: -1L
+        explicitOpen = savedInstanceState?.getBoolean("explicit_open", true) ?: true
+        openError = savedInstanceState?.getString("open_error")
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         val root = FrameLayout(this).apply { setBackgroundColor(android.graphics.Color.BLACK) }
         view = VideoControlsView(this).apply {
@@ -73,7 +80,7 @@ class PlayerActivity : AppCompatActivity() {
         note = TextView(this).apply {
             textSize = 14f; setTextColor(android.graphics.Color.WHITE); gravity = Gravity.CENTER
             setPadding(dp(20), dp(12), dp(20), dp(12)); setBackgroundColor(0x99000000.toInt())
-            setOnClickListener { controller?.let { if (it.playerError != null) { it.prepare(); it.play() } } }
+            setOnClickListener { controller?.let { if (openError != null || it.playerError != null) openVideo(it) } }
         }
         root.addView(note, FrameLayout.LayoutParams(-1, -2, Gravity.BOTTOM).apply { bottomMargin = dp(150) })
         ViewCompat.setOnApplyWindowInsetsListener(root) { target, insets ->
@@ -93,16 +100,13 @@ class PlayerActivity : AppCompatActivity() {
             try {
                 val player = pending.get()
                 controller = player
-                view.title = player.mediaMetadata.title ?: intent.getStringExtra("title") ?: "正在播放"
-                view.source = player.mediaMetadata.artist ?: ""
-                view.player = player
+                bindDisplay()
                 player.addListener(listener)
-                // long: 同一视频返回页面只重新绑定控制器，不能重新 setMediaItem 导致跳回旧进度。
-                if (key.isNotEmpty() && player.currentMediaItem?.mediaId != key) {
-                    player.setMediaItem(MediaItem.Builder().setMediaId(key).build(), resumePosition)
-                    player.prepare(); player.play()
+                if (key.isNotEmpty() && (explicitOpen || (player.currentMediaItem?.mediaId != key && openError == null))) {
+                    explicitOpen = false
+                    openVideo(player)
                 } else if (key.isEmpty() && player.currentMediaItem == null) {
-                    note.text = "没有正在播放的视频，请返回视频库选择"; return@addListener
+                    openError = "没有正在播放的视频，请返回视频库选择"
                 }
                 updateNote()
             } catch (_: Exception) { note.visibility = View.VISIBLE; note.text = "播放服务连接失败，请返回后重试" }
@@ -110,8 +114,9 @@ class PlayerActivity : AppCompatActivity() {
     }
 
     override fun onStop() {
+        openRequest++; opening = false
         view.onHostStop()
-        resumePosition = controller?.currentPosition ?: resumePosition
+        if (key.isEmpty() || controller?.currentMediaItem?.mediaId == key) resumePosition = controller?.currentPosition ?: resumePosition
         controller?.removeListener(listener)
         view.player = null
         controller = null
@@ -119,11 +124,37 @@ class PlayerActivity : AppCompatActivity() {
         future = null
         super.onStop()
     }
-    override fun onSaveInstanceState(outState: Bundle) { outState.putLong("position", controller?.currentPosition ?: resumePosition); super.onSaveInstanceState(outState) }
+    override fun onSaveInstanceState(outState: Bundle) { outState.putLong("position", controller?.currentPosition ?: resumePosition); outState.putBoolean("explicit_open", explicitOpen); outState.putString("open_error", openError); super.onSaveInstanceState(outState) }
+
+    private fun openVideo(player: MediaController) {
+        val target = key.ifEmpty { player.currentMediaItem?.mediaId.orEmpty() }
+        if (target.isEmpty()) return
+        val request = ++openRequest
+        opening = true; openError = null; updateNote()
+        val pending = player.sendCustomCommand(PlaybackService.OPEN, Bundle().apply { putString("key", target); putLong("position", resumePosition) })
+        pending.addListener({
+            if (controller !== player || isDestroyed || request != openRequest) return@addListener
+            opening = false
+            val result = runCatching { pending.get() }.getOrNull()
+            openError = if (result?.resultCode == SessionResult.RESULT_SUCCESS) null else result?.sessionError?.message ?: "视频打开失败，请重试"
+            updateNote()
+        }, ContextCompat.getMainExecutor(this))
+    }
+
+    private fun bindDisplay() {
+        val player = controller ?: return
+        val matches = key.isEmpty() || player.currentMediaItem?.mediaId == key
+        // long: 打开新视频失败时旧媒体可能仍在服务中，不能把它的画面和标题当成目标资源展示。
+        view.player = if (matches) player else null
+        view.title = if (matches) player.mediaMetadata.title ?: "正在播放" else intent.getStringExtra("title") ?: "正在打开视频"
+        view.source = if (matches) player.mediaMetadata.artist ?: "" else ""
+    }
 
     private fun updateNote() {
         val player = controller ?: return
         note.text = when {
+            opening -> "正在打开视频…"
+            openError != null -> "$openError · 点击重试"
             player.playerError != null -> getString(R.string.playback_error, player.playerError!!.errorCodeName) + " · 点击重试"
             player.playbackState == Player.STATE_ENDED -> "播放完毕"
             else -> ""

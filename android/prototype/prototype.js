@@ -20,7 +20,7 @@ const icons = {
   plus:'<path d="M12 4v16M4 12h16"/>',
   check:'<path d="m5 12 4 4L20 5"/>',
   more:'<circle cx="5" cy="12" r="1" fill="currentColor"/><circle cx="12" cy="12" r="1" fill="currentColor"/><circle cx="19" cy="12" r="1" fill="currentColor"/>',
-  refresh:'<path d="M20 8a8 8 0 0 0-13-3L3 9m0-6v6h6m-5 7a8 8 0 0 0 13 3l4-4m0 6v-6h-6"/>',
+  refresh:'<path d="M20 7v5h-5M4 17v-5h5M6.2 6.2a8.2 8.2 0 0 1 13.5 3.5M17.8 17.8a8.2 8.2 0 0 1-13.5-3.5"/>',
   sun:'<circle cx="12" cy="12" r="4"/><path d="M12 2v2m0 16v2M2 12h2m16 0h2M5 5l1.5 1.5m11 11L19 19M5 19l1.5-1.5m11-11L19 5"/>',
   moon:'<path d="M20 15A9 9 0 0 1 9 4a9 9 0 1 0 11 11z"/>',
   rotate:'<rect x="6" y="5" width="12" height="15" rx="2" transform="rotate(-25 12 12)"/><path d="M17 2h5v5M2 17v5h5"/>',
@@ -84,11 +84,6 @@ function renderLibrary(){
  $('#clear-search').hidden=!state.query;
  $('#filter-label').textContent=state.channel==='all'?'所有频道':getChannel(state.channel).name;
  $('#filter-button').classList.toggle('filtered',state.channel!=='all');
- const showContinue=state.scope==='all'&&!state.query&&state.channel==='all';
- $('#continue-section').hidden=!showContinue;
- $('#continue-track').classList.add('continue-list');
- // long: 已确认只采用文字列表；不创建封面节点，不保留展示模式偏好。
- $('#continue-track').innerHTML=videos.filter(v=>v.position>0).slice(0,2).map(v=>`<button class="continue-row" data-play="${v.id}" aria-label="继续观看 ${v.title}"><span class="continue-row-copy"><strong>${v.title}</strong><small>${getChannel(v.channel).name}<span>看到 ${time(v.position)}</span></small></span><span class="continue-row-play">${svg('play')}</span></button>`).join('');
  const list=filteredVideos();
  $('#results-heading').innerHTML=`${state.query?'搜索结果':state.scope==='recent'?'最近播放':'视频列表'} <span id="results-count">${list.length} 部</span>`;
  $('#video-grid').classList.add('list-view');
@@ -119,10 +114,21 @@ function showDetail(id){
  $('#detail-scroll').innerHTML=`<div class="detail-list-top"><button class="icon-button" data-action="library" aria-label="返回视频库">${svg('back')}</button></div><div class="detail-content"><h2>${v.title}</h2><p class="detail-file">${v.file}</p><div class="media-facts"><span>${svg('file')}${v.size}</span><span>发布于 ${v.date}</span></div><div class="detail-source">${channelAvatar(ch)}<div><p>${ch.name}</p><small>Telegram 频道</small></div><button data-channel-filter="${ch.id}">查看频道</button></div><button class="primary-button detail-play" data-play="${v.id}">${svg('play')}${v.position>0?'继续播放':'播放视频'}</button>${v.position>0?`<span class="detail-resume">上次看到 ${time(v.position)}</span>`:''}<h3 class="related-heading">来自同一频道</h3>${related.map(r=>`<button class="related-item" data-video="${r.id}"><span><strong>${r.title}</strong><small>${r.date} · ${r.size}</small></span></button>`).join('')}</div>`;
  navigate('detail');$('#detail-scroll').scrollTop=0;
 }
+let syncRun=null,syncTimer=null;
+const syncResults=new Map();
 function renderChannels(){
  $('#channel-count').textContent=channels.length;
- $('#channel-total').textContent=`${videos.length} 个视频`;
- $('#channel-list').innerHTML=channels.map(ch=>`<article class="channel-item">${channelAvatar(ch)}<button class="channel-content" data-channel-filter="${ch.id}"><strong>${ch.name}</strong><p><span>${videos.filter(v=>v.channel===ch.id).length} 个视频</span><small>${ch.added?'等待首次扫描':'已同步'}</small></p></button><button class="icon-button" data-channel-more="${ch.id}" aria-label="管理 ${ch.name}">${svg('more')}</button></article>`).join('');
+ $('#channel-total').textContent=syncRun?`更新中 · ${syncRun.index} / ${syncRun.ids.length}`:`${videos.length} 个视频`;
+ const button=$('#sync-all');
+ button.classList.toggle('spinning',!!syncRun);
+ button.setAttribute('aria-label',syncRun?'暂停更新':'更新全部频道');
+ button.title=syncRun?'暂停更新':'更新全部频道';
+ $('#channel-list').innerHTML=channels.map(ch=>{
+  const result=syncResults.get(ch.id),running=syncRun?.ids[syncRun.index]===ch.id;
+  const blocked=!!syncRun&&!running;
+  const label=running?'更新中…':result||'尚未更新';
+  return `<article class="channel-item">${channelAvatar(ch)}<button class="channel-content" data-channel-filter="${ch.id}"><strong>${ch.name}</strong><p><span>${videos.filter(v=>v.channel===ch.id).length} 个视频</span><small>${label}</small></p></button><button class="icon-button channel-update${running?' spinning':''}" data-sync="${ch.id}" aria-label="${running?'暂停更新':'更新频道'} ${ch.name}" ${blocked?'disabled':''}>${svg('refresh')}</button><button class="icon-button" data-channel-more="${ch.id}" aria-label="管理 ${ch.name}">${svg('more')}</button></article>`;
+ }).join('');
 }
 function showToast(message){clearTimeout(toastTimer);$('#snackbar').textContent=message;$('#snackbar').hidden=false;toastTimer=setTimeout(()=>$('#snackbar').hidden=true,2800);}
 function showSheet(title,content){
@@ -150,22 +156,27 @@ function showAdd(){showSheet('添加频道',`<p class="sheet-intro">从 Telegram
 function addChannel(id,name){if(channels.some(ch=>ch.id===id)){showToast('这个频道已经添加');return;}channels.push({id,name,mark:name[0],color:'#617a92',background:'#e7edf2',added:true});closeSheet();renderChannels();showToast('已添加示例频道，可在频道菜单开始扫描');}
 function syncChannel(id='all'){
  closeSheet();
- const button=$('#sync-all');
- if(button.disabled){showToast('正在同步，请稍候');return;}
- const total=id==='all'?channels.length:1;
- if(!total){showToast('请先添加频道');return;}
- let count=0;
- // long: 同步状态只在操作期间反馈，常驻页面留给频道列表，不再保留占空间的就绪卡片。
- button.classList.add('spinning');button.disabled=true;button.setAttribute('aria-label','正在同步频道');
- showToast('正在检查新视频');
- const timer=setInterval(()=>{
-  count++;button.title=`已完成 ${count} / ${total} 个频道`;
-  if(count>=total){
-   clearInterval(timer);channels.forEach(ch=>{if(id==='all'||ch.id===id)ch.added=false;});
-   button.classList.remove('spinning');button.disabled=false;button.title='同步全部频道';button.setAttribute('aria-label','同步全部频道');
-   renderChannels();showToast('示例同步完成，暂无新视频');
-  }
- },600);
+ if(syncRun){
+  clearTimeout(syncTimer);
+  syncRun.ids.slice(syncRun.index).forEach(key=>syncResults.set(key,'已暂停，点击继续'));
+  syncRun=null;renderChannels();showToast('示例更新已暂停');return;
+ }
+ const ids=id==='all'?channels.map(ch=>ch.id):[id];
+ if(!ids.length){showToast('请先添加频道');return;}
+ // long: 原型也逐项展示状态，等待中的频道保持静止，当前频道和顶部按钮才旋转。
+ syncRun={ids,index:0};ids.forEach(key=>syncResults.set(key,'等待更新'));
+ function next(){
+  if(!syncRun)return;
+  renderChannels();
+  syncTimer=setTimeout(()=>{
+   const current=syncRun.ids[syncRun.index],channel=channels.find(ch=>ch.id===current);
+   if(channel){syncResults.set(current,'已是最新');channel.added=false;}
+   syncRun.index++;
+   if(syncRun.index>=syncRun.ids.length){syncRun=null;renderChannels();showToast('示例更新完成，暂无新视频');}
+   else next();
+  },1400);
+ }
+ next();
 }
 function showChannelMenu(id){const ch=getChannel(id);showSheet(ch.name,`<div class="option-list"><button class="option" data-channel-filter="${id}">${svg('library')}<span>查看频道视频</span></button><button class="option" data-sync="${id}">${svg('refresh')}<span>${ch.added?'开始扫描':'检查新视频'}</span></button><button class="option danger" data-remove-channel="${id}">${svg('close')}<span>移除频道</span></button></div>`);}
 function showVideoMenu(){const v=state.selected;showSheet('资源信息',`<div class="info-pair"><span>视频名称</span><strong>${v.title}</strong></div><div class="info-pair"><span>来源频道</span><strong>${getChannel(v.channel).name}</strong></div><div class="info-pair"><span>文件大小</span><strong>${v.size}</strong></div><div class="sheet-footer"><button class="secondary-button" id="copy-info" style="width:100%">复制资源信息</button></div>`);}

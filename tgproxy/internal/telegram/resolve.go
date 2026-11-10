@@ -32,8 +32,10 @@ func (c *Client) resolvePeer(ctx context.Context, ref string) (peers.Peer, error
 		return p, err
 	}
 	// long: 重启后的数字 ID 可能缺少 access_hash，只在直接解析失败时查已有会话，不加入新频道。
-	c.dialogMu.Lock()
-	defer c.dialogMu.Unlock()
+	if err := c.acquireDialogs(ctx); err != nil {
+		return nil, err
+	}
+	defer func() { <-c.dialogGate }()
 	if ctx.Err() != nil {
 		return nil, ctx.Err()
 	}

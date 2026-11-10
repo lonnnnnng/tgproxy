@@ -4,8 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"strings"
-	"tgproxy/internal/media"
 
 	"github.com/gotd/td/tg"
 
@@ -28,12 +26,13 @@ func (c *Client) ResolveChannel(ctx context.Context, ref string) (int64, string,
 
 // MediaItem is a scanned media file.
 type MediaItem struct {
-	ChannelID int64
-	MessageID int
-	Name      string
-	Size      int64
-	MIME      string
-	Date      int64
+	ChannelID  int64
+	MessageID  int
+	Name       string
+	Size       int64
+	MIME       string
+	Date       int64
+	DocumentID int64
 }
 
 // ScanChannel fetches messages of a channel and extracts media items (newest first).
@@ -93,24 +92,11 @@ func scanHistory(ctx context.Context, api historyAPI, peer tg.InputPeerClass, ch
 			if !ok {
 				continue
 			}
-			md, ok := tmedia.GetMedia(m)
+			item, ok := videoMessage(channelID, m)
 			if !ok {
 				continue
 			}
-			mime := ""
-			if mm, ok := m.Media.(*tg.MessageMediaDocument); ok {
-				if doc, ok := mm.Document.(*tg.Document); ok {
-					mime = doc.MimeType
-				}
-			}
-			if !media.IsVideo(md.Name) && !strings.HasPrefix(mime, "video/") {
-				continue
-			}
-			name := md.Name
-			if !media.IsVideo(name) {
-				name += ".mp4"
-			}
-			items = append(items, MediaItem{ChannelID: channelID, MessageID: m.ID, Name: name, Size: md.Size, MIME: mime, Date: md.Date})
+			items = append(items, item)
 			if limit > 0 && len(items) >= limit {
 				return items, nil
 			}
