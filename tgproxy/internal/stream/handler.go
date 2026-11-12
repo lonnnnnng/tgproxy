@@ -49,8 +49,17 @@ func (c *Cache) Handler(src Source) http.Handler {
 			return
 		}
 		cacheKey := file
+		identity := file
 		if source, ok := cs.(interface{ CacheKey() string }); ok {
-			cacheKey = file + ":" + source.CacheKey()
+			identity = source.CacheKey()
+			cacheKey = file + ":" + identity
+		}
+		// long: 下载断点绑定真实文件身份，同一消息换片即使大小相同也不能拼接新旧字节。
+		etag := strconv.Quote(identity)
+		w.Header().Set("ETag", etag)
+		if expected := r.Header.Get("If-Match"); expected != "" && expected != etag {
+			http.Error(w, "media source changed", http.StatusPreconditionFailed)
+			return
 		}
 		sub := &fileCache{c: c, src: cs, file: cacheKey, ahead: c.newReadAhead(cs, cacheKey)}
 		defer sub.ahead.Close()

@@ -2,7 +2,7 @@
 
 TGProxy Android 是面向 ARM64 手机的 Telegram 频道视频索引和播放器。App 使用 Telegram 用户账号读取已加入频道中的视频，索引保存在本机，播放通过手机内的 Range 服务交给 Media3。它不依赖 Linux TGProxy 服务、Jellyfin 或媒体树。
 
-当前版本为 **0.5.0**，采用紧凑文字列表，支持频道一键更新、逐频道状态、发布日期、视频详情及播放控制面板。仅支持 `arm64-v8a`、Android 8.0/API 26 及以上。
+当前版本为 **0.6.0**，采用紧凑文字列表，支持频道一键更新、视频下载管理、离线播放、发布日期、视频详情及播放控制面板。仅支持 `arm64-v8a`、Android 8.0/API 26 及以上。
 
 ## 构建环境
 
@@ -76,13 +76,21 @@ adb -s SERIAL install --no-incremental -r app/build/outputs/apk/release/tgproxy-
 
 API 凭证和授权会话使用 Android Keystore 加密，文件位于应用 `noBackupFilesDir`；SQLite 位于应用私有目录。内置 Go HTTP 服务只监听 `127.0.0.1`，并要求随机 Bearer token。公开分发前应改用在 Telegram 官方 `my.telegram.org` 为自己的应用申请的 API ID/Hash。详情见 [技术说明](TECHNICAL.md) 和 [设备验收记录](VERIFICATION.md)。
 
+## 下载与离线播放
+
+资源详情的“下载视频”会把视频加入串行后台队列。在“我的 → 下载管理”查看进度、速度、已下载大小，支持暂停、继续、失败重试和取消删除；通知也可以全部暂停。完成后从下载管理直接离线播放，详情页也会优先使用已完成的本机文件。
+
+下载保存在 App 私有目录，覆盖升级会保留，卸载 App 会删除。已完成条目的更多菜单提供“另存到手机目录”，通过系统文件选择器导出副本；导出的文件不受 App 中删除任务影响。下载不会自动占用公共相册。
+
+移除频道和退出账号不会删除下载文件；退出或重新授权会暂停联网任务，未完成任务需登录原账号继续。应用进程中断后恢复为已暂停，点击继续即可续传；不会在重启手机后自动下载。视频在 Telegram 中被替换或失效时，任务会失败而不拼接不同文件，需要校验频道后重新添加下载。
+
 ## 播放器控制
 
 底栏直接选择并记住倍速，长按画面临时 2×，松手恢复；双击左侧后退 10 秒、右侧前进 10 秒。左侧上下滑动调亮度，右侧调媒体音量。支持锁定防误触，以及适应、裁切、拉伸、16:9、4:3 五种画面模式。单击显示/隐藏控制栏，更多菜单可查看操作说明、播放信息、字幕和音轨。
 
 锁定后点按画面显示“解锁控制”，系统返回键也可先解锁。亮度仅在当前播放器窗口生效，进入后台恢复；媒体音量保留用户调整。后台播放、同一视频恢复、字幕和音轨沿用 Media3。
 
-控制器已拆为可单独构建 AAR 的 [player-controls 模块](player-controls/README.md)。[Android 0.5.0 发行版](https://github.com/lonnnnnng/tgproxy/releases/tag/android-v0.5.0) 同时提供 App APK 和组件 AAR，组件接入无需 Telegram 或 TGProxy 服务。
+控制器已拆为可单独构建 AAR 的 [player-controls 模块](player-controls/README.md)。[Android 0.6.0 发行版](https://github.com/lonnnnnng/tgproxy/releases/tag/android-v0.6.0) 同时提供 App APK 和组件 AAR，组件接入无需 Telegram 或 TGProxy 服务。
 
 ## 测试
 

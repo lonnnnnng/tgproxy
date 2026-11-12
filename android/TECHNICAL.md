@@ -1,6 +1,6 @@
 # TGProxy Android 技术说明
 
-本文描述 Android 0.5.0 的模块职责、数据格式和生命周期约束。产品范围与操作流程见 [README.md](README.md)；设备和构建验收结果见 [VERIFICATION.md](VERIFICATION.md)。
+本文描述 Android 0.6.0 的模块职责、数据格式和生命周期约束。产品范围与操作流程见 [README.md](README.md)；设备和构建验收结果见 [VERIFICATION.md](VERIFICATION.md)。
 
 ## 运行结构
 
@@ -160,3 +160,17 @@ Go chunkSource 共享有效 DC／location 与版本；过期引用刷新合并�
 主连接事件区分已授权与当前在线状态，内部重连期间对外报告 reconnecting。“我的 → 运行诊断”提供两秒采样下载速度、LRU 缓存量、命中／未命中、分块失败分类、连接重试、文件引用刷新和 DC 迁移次数；不显示 session、token、真实媒体 URL 或原始错误。缓存量仅指 LRU，不代表整个进程内存。
 
 本轮测试覆盖及未验证范围见 VERIFICATION.md。还没有 Telegram updates 实时对账、自动定时校验、全视频编码覆盖或长期功耗结论。
+
+## 持久下载与离线播放
+
+`DownloadStore` 独立维护 `downloads.db`，记录任务 UUID、原账号 ID、视频元数据快照、document ID、状态、字节数和离线播放位置。频道索引 schema 保持 v3；下载不随移除频道或退出账号清空。文件路径只由验证过的 UUID 生成，保存到 `filesDir/downloads/`，不使用远端文件名构造路径。写入使用 `.part`，完整长度验证、fsync 和改名后才标记 COMPLETE；启动恢复处理中任务为 PAUSED，并识别“文件已改名、状态未提交”的中断窗口。
+
+`Downloads` 使用独立命令与传输线程，串行下载，不占用登录／扫描操作队列或 Media3 播放器。命令、进度和最终提交共享锁；暂停关闭当前 HTTP 连接，取消删除等待写入者结束，避免迟到回调恢复已删除任务。元数据快照供页面与通知读取，不在每次 UI 刷新时扫描 SQLite。进程退出不自动继续，用户点击后启动 `DownloadService` 的 dataSync 前台服务，提供通知和有超时上限的 CPU 唤醒锁；系统服务时限或服务退出保存暂停状态。
+
+`DownloadTransfer` 每次请求 1 MiB Range，检查 206、Content-Range 起止／总长及 ETag。Go ETag 来自实际 source CacheKey（Telegram document ID 和大小），If-Match 不符时返回 412；断点旁保存 ETag，首次请求也核对索引中的 document ID。相同消息换片且大小相同也不能拼接。HTTP 禁止跳转，Bearer 只向当前 Engine 的回环地址发送；URL 和令牌不持久化。重新授权／退出会暂停任务，每段及结束时验证 Engine 和账号身份，继续下载只能使用原账号。
+
+下载完成后通过 `download:<UUID>` 发送已有受信任 OPEN 命令；PlaybackService 从 DownloadStore 验证完成状态和本机长度后建立 file URI，不接受外部任意路径。离线播放与通知恢复不要求 Telegram Engine；断点写入下载库，详情文案读取同一位置。`DownloadsActivity` 通过 ACTION_CREATE_DOCUMENT 让用户选择导出位置，在后台复制已完成文件；导出副本由用户独立管理，不申请全盘存储权限。
+
+官方依据：[dataSync 前台服务](https://developer.android.com/develop/background-work/services/fgs/service-types#data-sync)、[系统文件创建与导出](https://developer.android.com/training/data-storage/shared/documents-files#create-file)。后台运行受系统限制，无法保证无限持续下载；网络中断失败后保留断点，由用户重试。播放与下载共享 Telegram 网络和带宽，当前下载并发为 1。
+
+测试分层：JVM 本机 HTTP 测试截断续传、取消、Range 忽略和身份变化；Go stream race 测试 ETag/If-Match 拒绝同大小换片；Android 独立 SQLite／空会话 Engine 验证完整字节、数据库重开、改名恢复、失败隔离和离线播放。`DownloadLiveTest` 必须显式 `liveTelegram=true`，会从真实资源中取样验证启动／暂停／继续，只清理该用例创建的任务。

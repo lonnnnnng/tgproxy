@@ -92,7 +92,7 @@ class PlayerActivity : AppCompatActivity() {
 
     override fun onStart() {
         super.onStart()
-        if (app.engine == null) { note.text = "播放内核尚未恢复，请返回后重试"; return }
+        if (app.engine == null && key.isNotEmpty() && !key.startsWith("download:")) { note.text = "播放内核尚未恢复，请返回后重试"; return }
         val pending = MediaController.Builder(this, SessionToken(this, ComponentName(this, PlaybackService::class.java))).buildAsync()
         future = pending
         pending.addListener({

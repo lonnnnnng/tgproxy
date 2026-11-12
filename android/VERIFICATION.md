@@ -167,3 +167,23 @@ Debug、测试 APK 和 Lint 构建通过，原型 JavaScript 语法与 `git diff
 上述可靠性修复、首页精简和频道更新交互合并进入 `android-v0.5.0`，版本 `0.5.0` / `versionCode 6`。历史章节的“未发布”描述对应当时的开发检查；本节将其纳入本次发行范围。沿用正式包名 `dev.tgproxy.mobile` 和既有签名，ARM64、minSdk 26、targetSdk 36。
 
 发行内容和开发阶段验收边界见 [RELEASE-v0.5.0.md](RELEASE-v0.5.0.md)。正式制品由提交后的源码通过 `build-release.sh` 重建 Go AAR 并签名；最终 APK、播放器 AAR 和各自 SHA-256 文件随 GitHub Release 提供，发布构建日志留在忽略目录 `app/build/validation/android-v0.5.0-*`。
+
+## 详情下载与下载管理（2026-11-12，开发中未发布）
+
+新增详情下载按钮、我的下载管理、串行 dataSync 下载服务、持久断点、完成文件离线播放和系统另存入口。下载独立保存账号和文档身份，播放断点独立于在线播放；覆盖安装保留，卸载删除 App 私有文件。完成条目点击管理直接进入已完成分页，离线通知恢复无需 Telegram Engine。
+
+- Go ARM64 AAR 已重建。Debug／Release、测试 APK、JVM 下载测试和 Lint 构建通过；Go stream race 测试通过，新增 If-Match 同大小换片拒绝测试。
+- 3 项 JVM 下载传输测试通过：HTTP 截断后准确续传和完整字节比较、拒绝忽略 Range／身份变化、取消后保留断点并继续。
+- POCO F2 Pro（31936bb6）保留数据更新 Debug 验证包。DownloadTest、CorePlaybackTest 和 NavigationTest 共 18 项：17 项通过，登录草稿因已有授权跳过 1 项。下载用独立 SQLite 和空会话 Go Engine 验证暂停、重开恢复、完成改名中断恢复、失败后继续下一项、删除隔离、详情和我的入口、离线播放及 seek。应用本身仍可恢复用户既有 Telegram 连接，不能把整次 instrumentation 称为零网络运行。
+- 另一次下载专项 3 项通过，真实自动抽样用例失败：所选另一条资源返回 HTTP 502，原因未确定；失败日志保留，未据此宣称所有 Telegram 资源都能下载。
+- 用户亲自添加的真实任务在安装／测试重启后恢复为 PAUSED，已从 16,777,216 字节继续到 COMPLETE。数据库完成字节和本机文件长度均为 **31,380,079 字节**，任务与文件保留，管理页显示 0 项未完成／1 项已完成；没有删除用户下载或频道索引。
+- 截图检查详情下载入口、我的下载管理入口，以及真实完成条目的状态和播放操作。实际系统另存、长时锁屏下载、空间不足和系统 dataSync 配额用尽尚未做真机验收；进程恢复由数据库重开／实际安装重启观察，未验证重启手机自动继续（产品也不自动继续）。
+
+证据均在忽略目录 `app/build/validation/`：`download-build-4.log`、`download-final-build.log`、`download-unit-tests.log`、`download-device-tests.log`、`download-device-tests-2.log`、`download-live-test-2.log`、`download-complete-user.xml/png`。本轮未提交、推送、发版或覆盖正式包；版本号仍为 0.5.0。
+
+
+## Android 0.6.0 发版入口（2026-11-12）
+
+本次将详情下载、下载管理、断点续传和离线播放发布为 `android-v0.6.0`，版本 `0.6.0` / `versionCode 7`。沿用正式包名与签名，支持覆盖升级。用户明确要求“不用测试了，发个版”，本轮不再运行测试或操作手机，仅执行正式构建、签名和发行附件校验。上一节的测试与真实下载记录是开发阶段结果，不能视为本轮重测。
+
+正式制品由提交后的源码通过 `build-release.sh` 重建并签名，APK、播放器 AAR 和 SHA-256 校验文件随 Release 提供。发布说明见 [RELEASE-v0.6.0.md](RELEASE-v0.6.0.md)；构建和远端附件回验记录保存在忽略目录 `app/build/validation/android-v0.6.0-*`。正式版与验证版数据独立，本轮不迁移用户文件。

@@ -25,9 +25,22 @@ class VideoDetailActivity : AppCompatActivity() {
     private var video: JSONObject? = null
     private val queries = java.util.concurrent.Executors.newSingleThreadExecutor()
     private var playButton: MaterialButton? = null
+    private var downloadButton: MaterialButton? = null
+    private var downloadNote: TextView? = null
+    private var owner = 0L
+    private var lastLocalID: String? = null
+    private var pendingDownload: String? = null
+    private val handler = android.os.Handler(android.os.Looper.getMainLooper())
+    private val notificationPermission = registerForActivityResult(androidx.activity.result.contract.ActivityResultContracts.RequestPermission()) {
+        pendingDownload?.let(::enqueueDownload); pendingDownload = null
+    }
+    private val poll = object : Runnable {
+        override fun run() { refreshDownload(); handler.postDelayed(this, 800) }
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        pendingDownload = savedInstanceState?.getString("pendingDownload")
         WindowCompat.setDecorFitsSystemWindows(window, false)
         val root = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
@@ -52,6 +65,7 @@ class VideoDetailActivity : AppCompatActivity() {
         queries.execute {
             val loaded = runCatching {
                 val item = app.database.video(key)
+                owner = app.database.ownerID()
                 Triple(item, item?.let { app.database.channel(it.optLong("channel_id"))?.optString("title") } ?: "Telegram 频道", item?.let { app.database.videos(limit = 5, channelID = it.optLong("channel_id")) } ?: org.json.JSONArray())
             }
             runOnUiThread {
@@ -80,12 +94,29 @@ class VideoDetailActivity : AppCompatActivity() {
         playButton = MaterialButton(this).apply {
             isAllCaps = false; setIconResource(R.drawable.ic_play)
             setOnClickListener {
-                if (!app.mediaReady() || app.engine?.let { JSONObject(it.status()).optBoolean("connected") } != true) {
+                val local = downloadRecord()?.takeIf { it.state == DownloadState.COMPLETE }
+                if (local != null) {
+                    startActivity(Intent(this@VideoDetailActivity, PlayerActivity::class.java).putExtra("key", "download:${local.id}").putExtra("title", item.optString("name")))
+                } else if (!app.mediaReady() || app.engine?.let { JSONObject(it.status()).optBoolean("connected") } != true) {
                     Snackbar.make(root, "先连接 Telegram，再播放视频", Snackbar.LENGTH_LONG).show()
                 } else startActivity(Intent(this@VideoDetailActivity, PlayerActivity::class.java).putExtra("key", key).putExtra("title", item.optString("name")))
             }
         }
         content.addView(playButton, LinearLayout.LayoutParams(-1, dp(52)).apply { topMargin = dp(20) })
+        downloadButton = MaterialButton(this, null, com.google.android.material.R.attr.materialButtonOutlinedStyle).apply {
+            isAllCaps = false; text = "下载视频"; setIconResource(R.drawable.ic_download); iconSize = dp(18)
+            setOnClickListener {
+                val record = downloadRecord()
+                if (record?.state in listOf(DownloadState.RUNNING, DownloadState.QUEUED, DownloadState.COMPLETE)) {
+                    startActivity(Intent(this@VideoDetailActivity, DownloadsActivity::class.java).putExtra("complete", record?.state == DownloadState.COMPLETE))
+                } else if (android.os.Build.VERSION.SDK_INT >= 33 && checkSelfPermission(android.Manifest.permission.POST_NOTIFICATIONS) != android.content.pm.PackageManager.PERMISSION_GRANTED) {
+                    pendingDownload = key; notificationPermission.launch(android.Manifest.permission.POST_NOTIFICATIONS)
+                } else enqueueDownload(key)
+            }
+        }
+        content.addView(downloadButton, LinearLayout.LayoutParams(-1, dp(48)).apply { topMargin = dp(6) })
+        downloadNote = text("下载后可离线播放，在“我的 → 下载管理”中查看。", 11, true).apply { setPadding(0, dp(4), 0, dp(6)) }
+        content.addView(downloadNote)
         content.addView(MaterialButton(this, null, com.google.android.material.R.attr.materialButtonOutlinedStyle).apply {
             text = "查看此频道的视频"; isAllCaps = false
             setOnClickListener {
@@ -95,7 +126,7 @@ class VideoDetailActivity : AppCompatActivity() {
                 finish()
             }
         }, LinearLayout.LayoutParams(-1, dp(48)).apply { topMargin = dp(6) })
-        playButton?.text = "播放视频"; refreshPosition()
+        playButton?.text = "播放视频"; refreshPosition(); refreshDownload()
         val rows = (0 until related.length()).map(related::getJSONObject).filter { it.optString("key") != key }.take(4)
         if (rows.isNotEmpty()) {
             content.addView(text("同频道视频", 12, true).apply { setPadding(0, dp(28), 0, dp(8)) })
@@ -112,12 +143,46 @@ class VideoDetailActivity : AppCompatActivity() {
         }
     }
 
-    override fun onResume() { super.onResume(); refreshPosition() }
+    override fun onResume() { super.onResume(); refreshPosition(); handler.post(poll) }
+    override fun onPause() { handler.removeCallbacks(poll); super.onPause() }
     override fun onDestroy() { queries.shutdownNow(); super.onDestroy() }
+    override fun onSaveInstanceState(outState: Bundle) { outState.putString("pendingDownload", pendingDownload); super.onSaveInstanceState(outState) }
+    private fun downloadRecord(): DownloadRecord? {
+        val item = video ?: return null
+        return app.downloads.records.firstOrNull { it.owner == owner && it.key == item.optString("key") && it.document == item.optLong("document_id") }
+    }
+    private fun enqueueDownload(key: String) {
+        downloadButton?.isEnabled = false
+        app.downloads.enqueue(key) { error ->
+            if (!isDestroyed) {
+                downloadButton?.isEnabled = true; refreshDownload()
+                Snackbar.make(content, error ?: "已加入下载，可在“我的 → 下载管理”查看", Snackbar.LENGTH_LONG).show()
+            }
+        }
+    }
+    private fun refreshDownload() {
+        val item = downloadRecord()
+        val localID = item?.takeIf { it.state == DownloadState.COMPLETE }?.id
+        if (localID != lastLocalID) { lastLocalID = localID; refreshPosition() }
+        downloadButton?.text = when (item?.state) {
+            DownloadState.RUNNING -> "下载中 · ${item.bytes * 100 / item.size.coerceAtLeast(1)}% · 查看"
+            DownloadState.QUEUED -> "等待下载 · 查看"
+            DownloadState.COMPLETE -> "已下载 · 管理下载"
+            DownloadState.PAUSED -> "继续下载"
+            DownloadState.FAILED -> "重试下载"
+            DownloadState.DELETING -> "正在删除…"
+            null -> "下载视频"
+        }
+        downloadButton?.contentDescription = "${downloadButton?.text}：${video?.optString("name").orEmpty()}"
+        downloadNote?.text = item?.let { "${DownloadPresentation.status(it)} · ${DownloadPresentation.detail(it)}" }
+            ?: "下载后可离线播放，在“我的 → 下载管理”中查看。"
+    }
     private fun refreshPosition() {
         val key = video?.optString("key") ?: return
         queries.execute {
-            val position = app.database.position(key)
+            // long: 已完成下载优先离线播放，按钮上的断点必须来自同一个本机文件。
+            val local = downloadRecord()?.takeIf { it.state == DownloadState.COMPLETE }
+            val position = local?.let { app.downloads.store.get(it.id)?.position } ?: app.database.position(key)
             runOnUiThread { if (!isDestroyed) playButton?.text = if (position > 0) "继续播放 · ${MediaPresentation.position(position)}" else "播放视频" }
         }
     }

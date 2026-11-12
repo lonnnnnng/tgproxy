@@ -88,27 +88,39 @@ class PlaybackService : MediaSessionService() {
         if (key.isBlank() || released || stopping) return Futures.immediateFuture(SessionResult(SessionError.ERROR_INVALID_STATE))
         cancelOpenRequests()
         if (player.currentMediaItem?.mediaId != key) player.pause()
-        val expectedCore = app.engine ?: return Futures.immediateFuture(openFailure("播放内核尚未恢复，请返回后重试"))
-        if (key != "validation" && !app.mediaReady()) return Futures.immediateFuture(openFailure(app.accountIssue ?: "请先确认 Telegram 账号"))
+        val local = key.startsWith("download:")
+        val expectedCore = app.engine
+        if (!local && expectedCore == null) return Futures.immediateFuture(openFailure("播放内核尚未恢复，请返回后重试"))
+        if (!local && key != "validation" && !app.mediaReady()) return Futures.immediateFuture(openFailure(app.accountIssue ?: "请先确认 Telegram 账号"))
         val generation = openGeneration
         val result = SettableFuture.create<SessionResult>(); pendingOpens.add(result)
         // long: 即使主键相同也重新读取文档身份，资源换片后不能复用旧播放器和断点。
         mediaWorker.execute {
             val resolved = runCatching {
+                if (local) {
+                    // long: 离线播放只接受本应用保存的已完成任务 ID，不允许调用方传任意文件路径。
+                    val id = key.removePrefix("download:")
+                    val record = app.downloads.store.get(id) ?: error("下载任务已移除")
+                    val file = app.downloads.store.completed(id) ?: error("下载文件已丢失或尚未完成")
+                    return@runCatching ResolvedMedia(MediaItem.Builder().setMediaId(key).setUri(android.net.Uri.fromFile(file))
+                        .setMimeType(record.mime).setMediaMetadata(MediaMetadata.Builder().setTitle(record.name).setArtist("本机下载 · 离线播放").build()).build(),
+                        record.position, "")
+                }
+                val core = expectedCore ?: error("播放内核尚未恢复")
                 if (key != "validation") app.requireMediaAccount()
                 val row = if (key == "validation") null else app.database.video(key) ?: error("视频已从本机索引移除，请返回视频列表")
-                if (row != null) expectedCore.registerVideo(row.toString())
-                val uri = if (key == "validation") app.validationMedia(expectedCore) else expectedCore.playbackURL(key)
+                if (row != null) core.registerVideo(row.toString())
+                val uri = if (key == "validation") app.validationMedia(core) else core.playbackURL(key)
                 ResolvedMedia(MediaItem.Builder().setMediaId(key).setUri(uri).setMediaMetadata(MediaMetadata.Builder()
                     .setTitle(row?.optString("name") ?: "本地播放测试")
                     .setArtist(row?.let { app.database.channel(it.optLong("channel_id"))?.optString("title") } ?: "TGProxy")
                     .setExtras(Bundle().apply { putLong("document_id", row?.optLong("document_id") ?: 0); putLong("account_id", app.database.ownerID()) }).build()).build(),
-                    if (key == "validation" && requestedPosition >= 0) requestedPosition else app.database.position(key), expectedCore.token())
+                    if (key == "validation" && requestedPosition >= 0) requestedPosition else app.database.position(key), core.token())
             }
             handler.post {
                 pendingOpens.remove(result)
                 // long: 换账号、停止播放和后发请求都会使旧解析作废，不能让迟到结果重新启动旧媒体。
-                if (released || stopping || generation != openGeneration || expectedCore !== app.engine || (key != "validation" && !app.mediaReady())) {
+                if (released || stopping || generation != openGeneration || (!local && (expectedCore !== app.engine || (key != "validation" && !app.mediaReady())))) {
                     result.set(SessionResult(SessionError.ERROR_INVALID_STATE)); return@post
                 }
                 val media = resolved.getOrNull()
@@ -140,6 +152,11 @@ class PlaybackService : MediaSessionService() {
     private fun savePosition() {
         if (!::player.isInitialized || released) return
         val key = player.currentMediaItem?.mediaId ?: return
+        if (key.startsWith("download:")) {
+            val position = if (player.playbackState == Player.STATE_ENDED) 0L else player.currentPosition
+            if (!mediaWorker.isShutdown) mediaWorker.execute { runCatching { app.downloads.store.position(key.removePrefix("download:"), position) } }
+            return
+        }
         if (key != "validation") {
             val position = if (player.playbackState == Player.STATE_ENDED) 0L else player.currentPosition
             val document = player.mediaMetadata.extras?.getLong("document_id", 0) ?: 0

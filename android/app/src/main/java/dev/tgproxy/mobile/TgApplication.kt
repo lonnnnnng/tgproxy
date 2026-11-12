@@ -15,6 +15,8 @@ class TgApplication : Application() {
         private set
     lateinit var vault: SessionVault
         private set
+    lateinit var downloads: Downloads
+        private set
     @Volatile var engine: Engine? = null
         private set
     @Volatile var startupError: String? = null
@@ -43,6 +45,7 @@ class TgApplication : Application() {
             getSharedPreferences("appearance", MODE_PRIVATE).getInt("theme", androidx.appcompat.app.AppCompatDelegate.MODE_NIGHT_FOLLOW_SYSTEM))
         vault = SessionVault(this)
         database = MediaDatabase(this)
+        downloads = Downloads(this, DownloadStore(this))
         initialize()
     }
 
@@ -82,6 +85,7 @@ class TgApplication : Application() {
             accountVerified = false
             legacyOwnershipPending = owner == 0L
             accountIssue = if (legacyOwnershipPending) "这份旧版索引尚未记录账号归属，请确认当前登录账号是原账号。" else "当前账号与本机索引不一致。请重新登录原账号，或退出此设备后切换账号。"
+            downloads.pauseAll("账号需要确认，登录原账号后继续")
             main.post { PlaybackService.stopPlayback(this, revokeSession = true) }
             return
         }
@@ -138,6 +142,7 @@ class TgApplication : Application() {
         if (!((id == 0L && hash.isEmpty()) || (id in 1..2147483647 && hash.length == 32 && hash.all { it in "0123456789abcdefABCDEF" }))) { finished("API ID 或 API Hash 格式无效"); return }
         if (busy) { finished("请等待当前操作结束"); return }
         busy = true
+        downloads.pauseAll("重新授权后可继续下载")
         worker.execute {
             var error: String? = null
             try {
@@ -225,6 +230,7 @@ class TgApplication : Application() {
         // long: 只重置损坏授权，保留媒体库归属；未绑定的旧索引必须由用户明确退出后清理。
         if (busy) { finished("请等待当前操作结束"); return }
         busy = true
+        downloads.pauseAll("重新授权后可继续下载")
         worker.execute {
             var failure: String? = null
             try {
@@ -242,6 +248,7 @@ class TgApplication : Application() {
     }
 
     fun logout(finished: (String?) -> Unit) {
+        downloads.pauseAll("已退出账号，登录原账号后可继续下载")
         PlaybackService.stopPlayback(this, revokeSession = true)
         cancelScan()
         if (busy) { finished("正在取消操作，请稍后再退出"); return }

@@ -950,6 +950,9 @@ class MainActivity : AppCompatActivity() {
             MaterialAlertDialogBuilder(this).setTitle("播放手势").setMessage(dev.longvideo.controls.R.string.pc_help_text).setPositiveButton("知道了", null).show()
         })
         body.addView(sectionHeader("账号与数据"))
+        body.addView(settingRow("下载管理", "离线视频与下载任务", R.drawable.ic_download) {
+            startActivity(Intent(this, DownloadsActivity::class.java))
+        })
         body.addView(settingRow("管理频道", "${app.database.channels().length()} 个", R.drawable.ic_channels) { navigation.selectedItemId = R.id.nav_channels })
         body.addView(settingRow("本机索引", "索引说明", R.drawable.ic_video) {
             MaterialAlertDialogBuilder(this).setTitle("本机索引").setMessage("索引和播放记录保存在此设备。视频在播放时按需读取，不会自动下载完整视频。\n\n列表日期是 Telegram 消息发布时间，按设备时区显示。").setPositiveButton("关闭", null).show()
@@ -1155,7 +1158,7 @@ class MainActivity : AppCompatActivity() {
 
     private fun confirmLogout() {
         MaterialAlertDialogBuilder(this).setTitle("退出此设备？")
-            .setMessage("会清除此设备保存的 Telegram 授权、频道索引和播放记录。Telegram 账号及频道消息不会被删除。")
+            .setMessage("会清除此设备保存的 Telegram 授权、频道索引和播放记录，并暂停下载。下载文件会保留，可在下载管理中删除；未完成任务需要登录原账号后继续。Telegram 账号及频道消息不会被删除。")
             .setNegativeButton("取消", null).setPositiveButton("退出") { _, _ ->
                 app.logout { error ->
                     if (!isDestroyed) {
@@ -1389,7 +1392,10 @@ class MainActivity : AppCompatActivity() {
         row.addView(imageButton(R.drawable.ic_stop, "停止播放") { PlaybackService.stopPlayback(this); updateMiniPlayer() }, LinearLayout.LayoutParams(dp(44), dp(48)))
         miniPlayer.addView(row)
         queryWorker.execute {
-            val title = runCatching { app.database.video(key)?.optString("name") }.getOrNull() ?: "本地测试视频"
+            val title = runCatching {
+                if (key.startsWith("download:")) app.downloads.store.get(key.removePrefix("download:"))?.name
+                else app.database.video(key)?.optString("name")
+            }.getOrNull() ?: "本地测试视频"
             handler.post { if (!isDestroyed && lastPlayingKey == key) { caption.text = title; caption.contentDescription = "返回正在播放：$title" } }
         }
     }
