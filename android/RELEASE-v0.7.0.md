@@ -25,6 +25,11 @@ POCO的10万条合成库深页游标查询约2.25ms，日期深OFFSET从48.59ms�
 
 开发阶段已在POCO F2 Pro完成下载／SQLite故障、观看记录、选片与后台重绑、真实系统另存、通知取消、字号1.5／320dp和播放器手势回归。19项JVM单元测试通过；大字体套件15项通过，1项登录草稿因保留已有授权跳过。完整分层结果见[优化验收报告](https://github.com/lonnnnnng/tgproxy/blob/android-v0.7.0/docs/APP-OPTIMIZATION-20261115.md)。
 
-发布阶段重建原生内核并核对正式包元数据、原签名和POCO覆盖升级，具体验证见[发布验收记录](https://github.com/lonnnnnng/tgproxy/blob/android-v0.7.0/android/VERIFICATION.md)。持续弱网、长期功耗、云／第三方文件提供器即时取消、完整TalkBack朗读及其他ROM尚未全面验收。
+发布阶段重建原生内核，Go race与vet、19项单元测试及Release Lint通过。正式包与原版签名一致，POCO从0.5.0覆盖升级到0.7.0，设备读回APK与本地一致，本机诊断片正常播放；具体验证见[发布验收记录](https://github.com/lonnnnnng/tgproxy/blob/android-v0.7.0/android/VERIFICATION.md)。持续弱网、长期功耗、云／第三方文件提供器即时取消、完整TalkBack朗读及其他ROM尚未全面验收。
 
 同时提供`player-controls-release.aar`与APK／AAR的SHA-256校验文件。组件新增可选导航与选片回调，不依赖Telegram或TGProxy服务；AAR不内嵌Maven依赖，接入方式见[组件文档](https://github.com/lonnnnnng/tgproxy/blob/android-v0.7.0/android/player-controls/README.md)。
+
+| 附件 | SHA-256 |
+| --- | --- |
+| `tgproxy-android-arm64.apk` | `0f2c19254a5fd1144aaa80f15fab151d5522c16955308683d507e136cec2d256` |
+| `player-controls-release.aar` | `4b5f2f358b66c94474a3dda3ffba872c8f952956e0dad4babc2fba28fa15dfbc` |

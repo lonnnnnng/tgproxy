@@ -187,3 +187,23 @@ Debug、测试 APK 和 Lint 构建通过，原型 JavaScript 语法与 `git diff
 本次将详情下载、下载管理、断点续传和离线播放发布为 `android-v0.6.0`，版本 `0.6.0` / `versionCode 7`。沿用正式包名与签名，支持覆盖升级。用户明确要求“不用测试了，发个版”，本轮不再运行测试或操作手机，仅执行正式构建、签名和发行附件校验。上一节的测试与真实下载记录是开发阶段结果，不能视为本轮重测。
 
 正式制品由提交后的源码通过 `build-release.sh` 重建并签名，APK、播放器 AAR 和 SHA-256 校验文件随 Release 提供。发布说明见 [RELEASE-v0.6.0.md](RELEASE-v0.6.0.md)；构建和远端附件回验记录保存在忽略目录 `app/build/validation/android-v0.6.0-*`。正式版与验证版数据独立，本轮不迁移用户文件。
+
+## Android 0.7.0 发布验收（2026-11-15）
+
+将六项优化纳入`android-v0.7.0`，版本0.7.0 / code8，包名`dev.tgproxy.mobile`。开发阶段的下载恢复、观看记录、分页、选片／连续播放、另存及大字体回归见[优化验收报告](../docs/APP-OPTIMIZATION-20261115.md)，发行内容见[RELEASE-v0.7.0.md](RELEASE-v0.7.0.md)。
+
+- 正式源码基线为`369c6b7`，使用现有`build-release.sh`重建原生AAR并签名。实际环境为Go1.27.4、JDK17、NDK28.2.13676358和SDK36；go.mod保持1.27.3最低要求、gomobile版本保持项目固定值。`go test -race ./...`与`go vet ./...`通过，原生AAR重建SHA-256仍为`97d9f8cfb61a9f485c64369182b83082c9b5f6b47b0b2edb1c1648e326bf1f20`。
+- 发布阶段19项JVM测试通过，Release Lint 0错误／37警告，正式构建、组件AAR、APK签名和zipalign检查通过。已完成的六项真机功能回归沿用优化阶段记录，没有重新运行全部测试。
+- APK元数据为0.7.0 / code8、minSdk26、targetSdk36，仅`arm64-v8a`、非debuggable，未打包`ExportTestProvider`、`NativeUiTest`、`RealSafExportTest`或`ValidationDownloadFixture`。测试APK和`.poc`包不作为发行附件。
+- 正式证书SHA-256为`ebbd4841f95c5fe0e7aad410a9f685b8c549ce958fcc18bb39efbe2533eb3206`，与GitHub 0.6.0及POCO旧0.5.0正式包相同。
+- 仅用POCO F2 Pro（31936bb6），从正式0.5.0 / code6通过`install --no-incremental -r`覆盖升级至0.7.0 / code8。设备APK读回SHA-256与本地正式包相同；没有卸载、清数据、重新登录、扫描频道或迁移验证版数据。
+- POCO正式包升级前未登录、0频道／0视频；升级后同一状态和数量。本机30秒诊断片正常播放，截图显示时间已推进；返回与下载管理入口正常，下载页显示0项未完成／0项已完成。诊断播放已停止。原验证包及其账号／下载独立保留。
+
+最终附件：
+
+| 文件 | SHA-256 |
+| --- | --- |
+| `tgproxy-android-arm64.apk` | `0f2c19254a5fd1144aaa80f15fab151d5522c16955308683d507e136cec2d256` |
+| `player-controls-release.aar` | `4b5f2f358b66c94474a3dda3ffba872c8f952956e0dad4babc2fba28fa15dfbc` |
+
+各自附独立`.sha256`文件，上传附件会回下载核对。构建、检查、设备读回、界面和附件回验留在忽略目录`app/build/validation/android-v0.7.0/`。本轮未使用模拟器；原有字体1.0和密度覆盖396保持不变。持续弱网、云目录即时取消、长期功耗及其他设备仍属于未全面覆盖范围。
