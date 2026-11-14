@@ -109,6 +109,192 @@ class DownloadTest {
         } finally { downloads.shutdown(); core.close(); store.close(); context.deleteDatabase(name); directory.deleteRecursively() }
     }
 
+    @Test fun recoveryIsolatesBadMetadataAndDeleteFailure() {
+        val name = "download-recovery-${UUID.randomUUID()}.db"
+        val directory = File(context.cacheDir, "download-recovery-${UUID.randomUUID()}").apply { mkdirs() }
+        var blockedID = ""
+        val store = object : DownloadStore(context, name, directory) {
+            override fun removeFiles(id: String) { if (id == blockedID) error("synthetic delete failure") else super.removeFiles(id) }
+        }
+        try {
+            val blocked = store.add(1, video(100)); blockedID = blocked.id
+            store.update(blocked.id, DownloadState.DELETING, 10)
+            store.file(blocked.id, true).writeBytes(ByteArray(10))
+            val good = store.add(1, video(100, "900000000_2"))
+            store.update(good.id, DownloadState.RUNNING, 20)
+            store.file(good.id, true).writeBytes(ByteArray(20))
+            val corrupt = store.add(1, video(100, "900000000_3"))
+            store.writableDatabase.execSQL("UPDATE downloads SET payload=?,state=? WHERE id=?", arrayOf("{", "UNKNOWN", corrupt.id))
+            assertEquals(2, store.recover())
+            assertEquals(3, store.list().size)
+            assertEquals(DownloadState.PAUSED, store.get(good.id)!!.state)
+            assertEquals(20L, store.get(good.id)!!.bytes)
+            assertEquals(DownloadState.FAILED, store.get(blocked.id)!!.state)
+            assertTrue(store.file(blocked.id, true).isFile)
+            assertFalse(store.get(corrupt.id)!!.valid)
+            assertEquals(DownloadState.FAILED, store.get(corrupt.id)!!.state)
+        } finally { store.close(); context.deleteDatabase(name); directory.deleteRecursively() }
+    }
+
+    @Test fun databaseFailureReleasesRunnerAndCanBeRetried() {
+        val name = "download-fault-${UUID.randomUUID()}.db"
+        val directory = File(context.cacheDir, "download-fault-${UUID.randomUUID()}").apply { mkdirs() }
+        val fixture = File(directory, "fixture.mp4")
+        context.assets.open("validation.mp4").use { input -> fixture.outputStream().use { input.copyTo(it) } }
+        val core = Mobilecore.newEngine(0, "", "")
+        val source = DownloadSource(core.mountValidationMedia(fixture.absolutePath), core.token())
+        val failWrite = java.util.concurrent.atomic.AtomicBoolean(false)
+        val store = object : DownloadStore(context, name, directory) {
+            override fun update(id: String, state: DownloadState, bytes: Long, error: String) {
+                if (state == DownloadState.RUNNING && failWrite.compareAndSet(true, false)) throw android.database.sqlite.SQLiteException("synthetic write failure")
+                super.update(id, state, bytes, error)
+            }
+        }
+        val downloads = Downloads(app, store, currentOwner = { 1 }, startService = {}) { source }
+        try {
+            await { downloads.ready }
+            val item = store.add(1, video(fixture.length()))
+            failWrite.set(true)
+            val failed = CountDownLatch(1)
+            downloads.start { failed.countDown() }
+            assertTrue(failed.await(10, TimeUnit.SECONDS))
+            assertFalse(downloads.isRunning)
+            assertNotNull(downloads.problem)
+            assertEquals(DownloadState.PAUSED, store.get(item.id)!!.state)
+            downloads.refresh(); await { downloads.problem == null }
+            val queued = CountDownLatch(1)
+            downloads.resumeAll { assertNull(it); queued.countDown() }
+            assertTrue(queued.await(3, TimeUnit.SECONDS))
+            val finished = CountDownLatch(1)
+            downloads.start { finished.countDown() }
+            assertTrue(finished.await(15, TimeUnit.SECONDS))
+            assertFalse(downloads.isRunning)
+            assertEquals(DownloadState.COMPLETE, store.get(item.id)!!.state)
+            assertArrayEquals(fixture.readBytes(), store.completed(item.id)!!.readBytes())
+        } finally { downloads.shutdown(); core.close(); store.close(); context.deleteDatabase(name); directory.deleteRecursively() }
+    }
+
+    @Test fun lowSpacePausesBatchAndResumeFiltersAccountAndFailureState() {
+        val name = "download-space-${UUID.randomUUID()}.db"
+        val directory = File(context.cacheDir, "download-space-${UUID.randomUUID()}").apply { mkdirs() }
+        val available = java.util.concurrent.atomic.AtomicLong(0)
+        val reads = java.util.concurrent.atomic.AtomicInteger()
+        val store = DownloadStore(context, name, directory)
+        val downloads = Downloads(app, store, availableBytes = available::get, currentOwner = { 1 }, startService = {}) {
+            reads.incrementAndGet(); error("space check must happen before reading media")
+        }
+        try {
+            await { downloads.ready }
+            val first = store.add(1, video(100))
+            val second = store.add(1, video(100, "900000000_2"))
+            val other = store.add(2, video(100, "900000000_3"))
+            store.update(other.id, DownloadState.PAUSED, 0)
+            val finished = CountDownLatch(1)
+            downloads.start { finished.countDown() }
+            assertTrue(finished.await(10, TimeUnit.SECONDS))
+            assertEquals(0, reads.get())
+            assertEquals(DownloadState.PAUSED, store.get(first.id)!!.state)
+            assertTrue(store.get(first.id)!!.error.contains("空间不足"))
+            assertEquals(DownloadState.PAUSED, store.get(second.id)!!.state)
+            store.update(first.id, DownloadState.FAILED, 0)
+            assertEquals(1, store.queueForOwner(1, failedOnly = true))
+            assertEquals(DownloadState.PAUSED, store.get(second.id)!!.state)
+            assertEquals(1, store.queueForOwner(1))
+            assertEquals(DownloadState.QUEUED, store.get(second.id)!!.state)
+            assertEquals(DownloadState.PAUSED, store.get(other.id)!!.state)
+        } finally { downloads.shutdown(); store.close(); context.deleteDatabase(name); directory.deleteRecursively() }
+    }
+
+    @Test fun initialReadFailureOffersExplicitRecovery() {
+        val name = "download-init-${UUID.randomUUID()}.db"
+        val directory = File(context.cacheDir, "download-init-${UUID.randomUUID()}").apply { mkdirs() }
+        val failRead = java.util.concurrent.atomic.AtomicBoolean(false)
+        val store = object : DownloadStore(context, name, directory) {
+            override fun list(): List<DownloadRecord> {
+                if (failRead.get()) throw android.database.sqlite.SQLiteException("synthetic read failure")
+                return super.list()
+            }
+        }
+        val item = store.add(1, video(100))
+        failRead.set(true)
+        val downloads = Downloads(app, store) { error("not used") }
+        try {
+            await { downloads.problem != null }
+            assertFalse(downloads.ready)
+            failRead.set(false); downloads.refresh(); await { downloads.ready }
+            assertNull(downloads.problem)
+            assertEquals(DownloadState.PAUSED, downloads.records.single { it.id == item.id }.state)
+        } finally { downloads.shutdown(); store.close(); context.deleteDatabase(name); directory.deleteRecursively() }
+    }
+
+    @Test fun invalidUUIDCanRemoveOnlyItsRecord() {
+        val name = "download-invalid-" + UUID.randomUUID() + ".db"
+        val directory = File(context.cacheDir, "download-invalid-" + UUID.randomUUID()).apply { mkdirs() }
+        val store = DownloadStore(context, name, directory)
+        val item = store.add(1, video(100))
+        val original = store.file(item.id, true).apply { writeBytes(ByteArray(10)) }
+        store.writableDatabase.execSQL("UPDATE downloads SET id=? WHERE id=?", arrayOf("broken-id", item.id))
+        val downloads = Downloads(app, store) { error("not used") }
+        try {
+            await { downloads.ready }
+            val removed = CountDownLatch(1)
+            downloads.remove("broken-id") { assertNull(it); removed.countDown() }
+            assertTrue(removed.await(3, TimeUnit.SECONDS))
+            assertNull(store.get("broken-id")); assertTrue(original.isFile)
+        } finally { downloads.shutdown(); store.close(); context.deleteDatabase(name); directory.deleteRecursively() }
+    }
+
+    @Test fun delayedServiceStopCannotCancelNewStart() {
+        val name = "download-generation-" + UUID.randomUUID() + ".db"
+        val directory = File(context.cacheDir, "download-generation-" + UUID.randomUUID()).apply { mkdirs() }
+        val fixture = File(directory, "fixture.mp4")
+        context.assets.open("validation.mp4").use { input -> fixture.outputStream().use { input.copyTo(it) } }
+        val core = Mobilecore.newEngine(0, "", "")
+        val source = DownloadSource(core.mountValidationMedia(fixture.absolutePath), core.token())
+        val store = DownloadStore(context, name, directory)
+        val manual = ManualExecutor()
+        val entered = arrayOf(CountDownLatch(1), CountDownLatch(1))
+        val release = arrayOf(CountDownLatch(1), CountDownLatch(1))
+        val calls = java.util.concurrent.atomic.AtomicInteger()
+        val downloads = Downloads(app, store, currentOwner = { 1 }, startService = {}, commands = manual) {
+            val index = calls.getAndIncrement().coerceAtMost(1)
+            entered[index].countDown(); check(release[index].await(10, TimeUnit.SECONDS))
+            source
+        }
+        try {
+            manual.runNext(); assertTrue(downloads.ready)
+            val item = store.add(1, video(fixture.length()))
+            val first = CountDownLatch(1)
+            downloads.start { first.countDown() }
+            assertTrue(entered[0].await(5, TimeUnit.SECONDS))
+            downloads.serviceStopped()
+            release[0].countDown(); assertTrue(first.await(5, TimeUnit.SECONDS))
+            assertEquals(1, store.queueForOwner(1))
+            val second = CountDownLatch(1)
+            downloads.start { second.countDown() }
+            assertTrue(entered[1].await(5, TimeUnit.SECONDS))
+            // long: 故意延迟旧停止的落盘，在新一轮开始后执行，验证它不会取消新的下载连接。
+            manual.runNext(); release[1].countDown()
+            assertTrue(second.await(15, TimeUnit.SECONDS))
+            assertEquals(DownloadState.COMPLETE, store.get(item.id)!!.state)
+        } finally {
+            release.forEach { it.countDown() }; downloads.shutdown(); core.close(); store.close()
+            context.deleteDatabase(name); directory.deleteRecursively()
+        }
+    }
+
+    private class ManualExecutor : java.util.concurrent.AbstractExecutorService() {
+        private val tasks = java.util.concurrent.ConcurrentLinkedQueue<Runnable>()
+        private var stopped = false
+        override fun execute(command: Runnable) { check(!stopped); tasks.add(command) }
+        fun runNext() { (tasks.poll() ?: error("缺少待执行任务")).run() }
+        override fun shutdown() { stopped = true }
+        override fun shutdownNow(): MutableList<Runnable> { stopped = true; return mutableListOf<Runnable>().also { while (tasks.isNotEmpty()) it.add(tasks.poll()) } }
+        override fun isShutdown() = stopped
+        override fun isTerminated() = stopped
+        override fun awaitTermination(timeout: Long, unit: TimeUnit) = stopped
+    }
+
     @Test fun myDownloadsAndDetailEntryRenderAndCompletedFilePlaysLocally() {
         await { app.downloads.ready }
         val before = app.database.channels().toString(); val count = app.database.count()

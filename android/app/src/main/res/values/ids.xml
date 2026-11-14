@@ -2,4 +2,5 @@
     <item name="nav_videos" type="id" />
     <item name="nav_channels" type="id" />
     <item name="nav_account" type="id" />
+    <item name="download_list" type="id" />
 </resources>

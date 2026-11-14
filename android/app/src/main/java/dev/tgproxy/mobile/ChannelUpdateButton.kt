@@ -24,7 +24,7 @@ class ChannelUpdateButton(context: Context) : FrameLayout(context) {
     internal val isSpinning get() = rotationAnimator?.isRunning == true
 
     init {
-        minimumWidth = dp(44); minimumHeight = dp(48)
+        minimumWidth = dp(48); minimumHeight = dp(48)
         isClickable = true; isFocusable = true
         val value = android.util.TypedValue()
         context.theme.resolveAttribute(android.R.attr.selectableItemBackgroundBorderless, value, true)

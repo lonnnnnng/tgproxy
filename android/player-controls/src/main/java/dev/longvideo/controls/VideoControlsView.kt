@@ -66,6 +66,18 @@ class VideoControlsView @JvmOverloads constructor(context: Context, attrs: Attri
     var onBack: (() -> Unit)? = null
     var onRotate: (() -> Unit)? = null
     var onInfo: (() -> Unit)? = null
+    var onPrevious: (() -> Unit)? = null
+        set(value) { field = value; updateNavigation() }
+    var onNext: (() -> Unit)? = null
+        set(value) { field = value; updateNavigation() }
+    var onQueue: (() -> Unit)? = null
+    var onToggleContinuous: (() -> Unit)? = null
+    var continuousPlaying = false
+    private var previousAvailable = false
+    private var nextAvailable = false
+    fun setNavigation(previous: Boolean, next: Boolean) {
+        previousAvailable = previous; nextAvailable = next; updateNavigation()
+    }
     var title: CharSequence
         get() = titleView.text
         set(value) { titleView.text = value }
@@ -111,18 +123,49 @@ class VideoControlsView @JvmOverloads constructor(context: Context, attrs: Attri
         video.setShowSubtitleButton(true)
         video.overlayFrameLayout?.addView(gestureSurface, LayoutParams(-1, -1))
         addView(feedback, LayoutParams(-2, -2, Gravity.TOP or Gravity.CENTER_HORIZONTAL).apply { topMargin = dp(88) })
-        addView(unlock, LayoutParams(-2, dp(48), Gravity.CENTER_VERTICAL or Gravity.START).apply { leftMargin = dp(20) })
+        addView(unlock, LayoutParams(-2, -2, Gravity.CENTER_VERTICAL or Gravity.START).apply { leftMargin = dp(20) })
+        unlock.minimumHeight = dp(48)
         video.findViewById<View>(R.id.pc_back).setOnClickListener { onBack?.invoke() }
         video.findViewById<View>(R.id.pc_rotate).setOnClickListener { cancelInteraction(); onRotate?.invoke() }
         video.findViewById<View>(R.id.pc_more).setOnClickListener { showMore() }
         video.findViewById<View>(R.id.pc_lock).setOnClickListener { setLocked(true) }
         aspectButton.setOnClickListener { showAspectPicker() }
         speedButton.setOnClickListener { showSpeedPicker() }
+        video.findViewById<View>(R.id.pc_previous).setOnClickListener { cancelInteraction(); onPrevious?.invoke() }
+        video.findViewById<View>(R.id.pc_next).setOnClickListener { cancelInteraction(); onNext?.invoke() }
+        updateNavigation()
         updateSpeed()
         applyAspect()
     }
 
     fun attachWindow(window: Window) { hostWindow = window }
+    private fun updateNavigation() {
+        video.findViewById<View>(R.id.pc_previous).apply { visibility = if (onPrevious == null) GONE else VISIBLE; isEnabled = previousAvailable; alpha = if (isEnabled) 1f else .35f }
+        video.findViewById<View>(R.id.pc_next).apply { visibility = if (onNext == null) GONE else VISIBLE; isEnabled = nextAvailable; alpha = if (isEnabled) 1f else .35f }
+        // long: 选片按钮出现时收窄图形间隔，保留每个按钮的完整命中范围，窄手机也能显示前后切换。
+        val navigation = onPrevious != null || onNext != null
+        val compact = navigation && width > 0 && width - paddingLeft - paddingRight < dp(336)
+        val gap = dp(if (compact) 4 else if (navigation) 8 else 24)
+        video.findViewById<View>(androidx.media3.ui.R.id.exo_rew).let { view ->
+            (view.layoutParams as? LinearLayout.LayoutParams)?.let { if (it.marginEnd != gap) { it.marginEnd = gap; view.layoutParams = it } }
+        }
+        video.findViewById<View>(androidx.media3.ui.R.id.exo_ffwd).let { view ->
+            (view.layoutParams as? LinearLayout.LayoutParams)?.let { if (it.marginStart != gap) { it.marginStart = gap; view.layoutParams = it } }
+        }
+        // long: 前后集同时出现时按实际可用宽度缩小图形容器，触控仍不低于48dp，避免窄窗口越界。
+        for (id in listOf(androidx.media3.ui.R.id.exo_rew, androidx.media3.ui.R.id.exo_ffwd, androidx.media3.ui.R.id.exo_play_pause)) {
+            val view = video.findViewById<View>(id)
+            val target = dp(if (id == androidx.media3.ui.R.id.exo_play_pause) { if (compact) 64 else 72 } else { if (compact) 48 else 56 })
+            if (view.layoutParams.width != target || view.layoutParams.height != target) {
+                view.layoutParams = view.layoutParams.apply { width = target; height = target }
+            }
+        }
+    }
+
+    override fun onSizeChanged(w: Int, h: Int, oldw: Int, oldh: Int) {
+        super.onSizeChanged(w, h, oldw, oldh)
+        updateNavigation()
+    }
 
     /** long: 宿主进入后台必须结束临时手势，不能让后台播放停留在 2× 或覆盖系统亮度。 */
     fun onHostStop() {
@@ -241,17 +284,16 @@ class VideoControlsView @JvmOverloads constructor(context: Context, attrs: Attri
     }
 
     private fun showMore() {
-        val labels = listOf(R.string.pc_audio, R.string.pc_subtitles, R.string.pc_info, R.string.pc_help)
-        showOptions(context.getString(R.string.pc_more), labels.map(context::getString)) { index ->
-            when (index) {
-                0 -> video.findViewById<View>(androidx.media3.ui.R.id.exo_settings).performClick()
-                1 -> video.findViewById<View>(androidx.media3.ui.R.id.exo_subtitle).let {
-                    if (it.isEnabled) it.performClick() else showFeedback(context.getString(R.string.pc_no_subtitles))
-                }
-                2 -> onInfo?.invoke()
-                3 -> showHelp()
-            }
-        }
+        val actions = mutableListOf<Pair<String, () -> Unit>>()
+        actions.add(context.getString(R.string.pc_audio) to { video.findViewById<View>(androidx.media3.ui.R.id.exo_settings).performClick(); Unit })
+        actions.add(context.getString(R.string.pc_subtitles) to {
+            video.findViewById<View>(androidx.media3.ui.R.id.exo_subtitle).let { if (it.isEnabled) it.performClick() else showFeedback(context.getString(R.string.pc_no_subtitles)) }; Unit
+        })
+        actions.add(context.getString(R.string.pc_info) to { onInfo?.invoke(); Unit })
+        actions.add(context.getString(R.string.pc_help) to { showHelp() })
+        onQueue?.let { actions.add(context.getString(R.string.pc_select_video) to it) }
+        onToggleContinuous?.let { actions.add((context.getString(R.string.pc_continuous) + if (continuousPlaying) "：开启" else "：关闭") to it) }
+        showOptions(context.getString(R.string.pc_more), actions.map { it.first }) { index -> actions[index].second() }
     }
 
     private fun showOptions(title: String, labels: List<String>, selected: Int = -1, action: (Int) -> Unit) {

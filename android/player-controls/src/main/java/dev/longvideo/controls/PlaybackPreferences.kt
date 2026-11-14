@@ -12,4 +12,7 @@ class PlaybackPreferences(context: Context) {
     var aspect: Int
         get() = storage.getInt("aspect", 0).coerceIn(0, 4)
         set(value) { storage.edit { putInt("aspect", value.coerceIn(0, 4)) } }
+    var continuous: Boolean
+        get() = storage.getBoolean("continuous", false)
+        set(value) { storage.edit { putBoolean("continuous", value) } }
 }

@@ -1,0 +1,8 @@
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <queries><package android:name="dev.tgproxy.mobile.poc" /></queries>
+    <application>
+        <provider android:name="dev.tgproxy.mobile.ExportTestProvider"
+            android:authorities="dev.tgproxy.mobile.poc.test.exports"
+            android:exported="true" android:grantUriPermissions="true" />
+    </application>
+</manifest>

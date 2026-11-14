@@ -42,6 +42,8 @@ class VideoDetailActivity : AppCompatActivity() {
         super.onCreate(savedInstanceState)
         pendingDownload = savedInstanceState?.getString("pendingDownload")
         WindowCompat.setDecorFitsSystemWindows(window, false)
+        WindowCompat.getInsetsController(window, window.decorView).isAppearanceLightNavigationBars =
+            resources.configuration.uiMode and android.content.res.Configuration.UI_MODE_NIGHT_MASK != android.content.res.Configuration.UI_MODE_NIGHT_YES
         val root = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             setBackgroundColor(color(com.google.android.material.R.attr.colorSurface))
@@ -93,18 +95,20 @@ class VideoDetailActivity : AppCompatActivity() {
         val key = item.getString("key")
         playButton = MaterialButton(this).apply {
             isAllCaps = false; setIconResource(R.drawable.ic_play)
+            minHeight = dp(52); insetTop = 0; insetBottom = 0
             setOnClickListener {
                 val local = downloadRecord()?.takeIf { it.state == DownloadState.COMPLETE }
                 if (local != null) {
-                    startActivity(Intent(this@VideoDetailActivity, PlayerActivity::class.java).putExtra("key", "download:${local.id}").putExtra("title", item.optString("name")))
+                    openPlayer("download:${local.id}", item.optString("name"))
                 } else if (!app.mediaReady() || app.engine?.let { JSONObject(it.status()).optBoolean("connected") } != true) {
                     Snackbar.make(root, "先连接 Telegram，再播放视频", Snackbar.LENGTH_LONG).show()
-                } else startActivity(Intent(this@VideoDetailActivity, PlayerActivity::class.java).putExtra("key", key).putExtra("title", item.optString("name")))
+                } else openPlayer(key, item.optString("name"))
             }
         }
-        content.addView(playButton, LinearLayout.LayoutParams(-1, dp(52)).apply { topMargin = dp(20) })
+        content.addView(playButton, LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(20) })
         downloadButton = MaterialButton(this, null, com.google.android.material.R.attr.materialButtonOutlinedStyle).apply {
             isAllCaps = false; text = "下载视频"; setIconResource(R.drawable.ic_download); iconSize = dp(18)
+            minHeight = dp(48); insetTop = 0; insetBottom = 0
             setOnClickListener {
                 val record = downloadRecord()
                 if (record?.state in listOf(DownloadState.RUNNING, DownloadState.QUEUED, DownloadState.COMPLETE)) {
@@ -114,18 +118,19 @@ class VideoDetailActivity : AppCompatActivity() {
                 } else enqueueDownload(key)
             }
         }
-        content.addView(downloadButton, LinearLayout.LayoutParams(-1, dp(48)).apply { topMargin = dp(6) })
+        content.addView(downloadButton, LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(6) })
         downloadNote = text("下载后可离线播放，在“我的 → 下载管理”中查看。", 11, true).apply { setPadding(0, dp(4), 0, dp(6)) }
         content.addView(downloadNote)
         content.addView(MaterialButton(this, null, com.google.android.material.R.attr.materialButtonOutlinedStyle).apply {
             text = "查看此频道的视频"; isAllCaps = false
+            minHeight = dp(48); insetTop = 0; insetBottom = 0
             setOnClickListener {
                 startActivity(Intent(this@VideoDetailActivity, MainActivity::class.java)
                     .addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP)
                     .putExtra("browse_channel", item.optLong("channel_id")))
                 finish()
             }
-        }, LinearLayout.LayoutParams(-1, dp(48)).apply { topMargin = dp(6) })
+        }, LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(6) })
         playButton?.text = "播放视频"; refreshPosition(); refreshDownload()
         val rows = (0 until related.length()).map(related::getJSONObject).filter { it.optString("key") != key }.take(4)
         if (rows.isNotEmpty()) {
@@ -144,12 +149,17 @@ class VideoDetailActivity : AppCompatActivity() {
     }
 
     override fun onResume() { super.onResume(); refreshPosition(); handler.post(poll) }
+    private fun openPlayer(key: String, title: String) {
+        startActivity(Intent(this, PlayerActivity::class.java).putExtra("key", key).putExtra("title", title)
+            .putExtra("queue_search", intent.getStringExtra("queue_search") ?: "")
+            .putExtra("queue_sort", intent.getStringExtra("queue_sort") ?: "newest"))
+    }
     override fun onPause() { handler.removeCallbacks(poll); super.onPause() }
     override fun onDestroy() { queries.shutdownNow(); super.onDestroy() }
     override fun onSaveInstanceState(outState: Bundle) { outState.putString("pendingDownload", pendingDownload); super.onSaveInstanceState(outState) }
     private fun downloadRecord(): DownloadRecord? {
         val item = video ?: return null
-        return app.downloads.records.firstOrNull { it.owner == owner && it.key == item.optString("key") && it.document == item.optLong("document_id") }
+        return app.downloads.find(owner, item.optString("key"), item.optLong("document_id"))
     }
     private fun enqueueDownload(key: String) {
         downloadButton?.isEnabled = false
@@ -180,9 +190,8 @@ class VideoDetailActivity : AppCompatActivity() {
     private fun refreshPosition() {
         val key = video?.optString("key") ?: return
         queries.execute {
-            // long: 已完成下载优先离线播放，按钮上的断点必须来自同一个本机文件。
-            val local = downloadRecord()?.takeIf { it.state == DownloadState.COMPLETE }
-            val position = local?.let { app.downloads.store.get(it.id)?.position } ?: app.database.position(key)
+            // long: 按同一媒体身份读取最新观看，不因下载完成或切换播放来源改用较旧断点。
+            val position = video?.let { app.history.forVideo(it, owner).position } ?: 0L
             runOnUiThread { if (!isDestroyed) playButton?.text = if (position > 0) "继续播放 · ${MediaPresentation.position(position)}" else "播放视频" }
         }
     }
@@ -190,8 +199,15 @@ class VideoDetailActivity : AppCompatActivity() {
         if (value.isBlank()) return
         content.addView(LinearLayout(this).apply {
             gravity = Gravity.CENTER_VERTICAL; minimumHeight = dp(36)
-            addView(text(label, 12, true), LinearLayout.LayoutParams(dp(80), -2))
-            addView(text(value, 12).apply { setTextIsSelectable(true) }, LinearLayout.LayoutParams(0, -2, 1f))
+            // long: 放大的字体下元数据按标签和值分行，长时间和格式名称不挤占标签宽度。
+            if (resources.configuration.fontScale > 1.2f || resources.configuration.screenWidthDp < 360) {
+                orientation = LinearLayout.VERTICAL; gravity = Gravity.START
+                setPadding(0, dp(5), 0, dp(5))
+                addView(text(label, 12, true)); addView(text(value, 12).apply { setTextIsSelectable(true) })
+            } else {
+                addView(text(label, 12, true), LinearLayout.LayoutParams(dp(80), -2))
+                addView(text(value, 12).apply { setTextIsSelectable(true) }, LinearLayout.LayoutParams(0, -2, 1f))
+            }
         })
     }
     private fun text(value: String, size: Int, muted: Boolean = false) = TextView(this).apply {

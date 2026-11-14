@@ -85,6 +85,9 @@ class MainActivity : AppCompatActivity() {
     private var search = ""
     private var searchField: TextInputEditText? = null
     private var page = 0
+    private var paginationSignature = ""
+    private val pageCursors = mutableMapOf<Int, VideoPageCursor>()
+    private var loadingVideos = false
     private var channelFilter = 0L
     private var recent = false
     private var videoRequest = 0
@@ -158,7 +161,17 @@ class MainActivity : AppCompatActivity() {
         channelFilter = savedInstanceState?.getLong("channelFilter") ?: 0L
         recent = savedInstanceState?.getBoolean("recent") ?: false
         search = savedInstanceState?.getString("search") ?: ""
-        page = savedInstanceState?.getInt("page") ?: 0
+        page = (savedInstanceState?.getInt("page") ?: 0).coerceIn(0, 1000000)
+        paginationSignature = savedInstanceState?.getString("pagination_signature").orEmpty()
+        savedInstanceState?.getString("page_cursors")?.let { raw ->
+            runCatching {
+                val entries = JSONArray(raw)
+                for (index in 0 until entries.length()) {
+                    val entry = entries.getJSONObject(index)
+                    VideoPageCursor.decode(entry.getString("cursor"))?.let { pageCursors[entry.getInt("page")] = it }
+                }
+            }
+        }
         completedScanID = savedInstanceState?.getLong("completedScanID") ?: app.scanQueue.snapshot.runID
         pendingScan = savedInstanceState?.takeIf { it.containsKey("pendingScan") }?.let {
             it.getLong("pendingScan") to it.getBoolean("pendingRefresh")
@@ -187,7 +200,7 @@ class MainActivity : AppCompatActivity() {
         }
         setContentView(root)
         ViewCompat.setOnApplyWindowInsetsListener(root) { view, insets ->
-            val bars = insets.getInsets(WindowInsetsCompat.Type.systemBars())
+            val bars = insets.getInsets(WindowInsetsCompat.Type.systemBars() or WindowInsetsCompat.Type.displayCutout())
             val ime = insets.getInsets(WindowInsetsCompat.Type.ime())
             view.setPadding(bars.left, bars.top, bars.right, maxOf(bars.bottom, ime.bottom))
             if (::navigation.isInitialized) {
@@ -307,6 +320,13 @@ class MainActivity : AppCompatActivity() {
         outState.putBoolean("recent", recent)
         outState.putString("search", search)
         outState.putInt("page", page)
+        outState.putString("pagination_signature", paginationSignature)
+        // long: 只保存当前页附近的游标，避免深库的长名称把系统状态包撑满；缺失旧页可定向回退查询。
+        outState.putString("page_cursors", JSONArray().apply {
+            pageCursors.filterKeys { it in (page - 16)..(page + 1) }.forEach { (index, cursor) ->
+                put(JSONObject().put("page", index).put("cursor", cursor.encode()))
+            }
+        }.toString())
         outState.putLong("completedScanID", completedScanID)
         pendingScan?.let { outState.putLong("pendingScan", it.first); outState.putBoolean("pendingRefresh", it.second) }
         outState.putBoolean("pendingRecheck", pendingRecheck)
@@ -331,6 +351,7 @@ class MainActivity : AppCompatActivity() {
         videoHeader.visibility = if (destination == R.id.nav_videos) View.VISIBLE else View.GONE
         body.setPadding(dp(20), if (destination == R.id.nav_videos) 0 else dp(12), dp(20), dp(24))
         videosContainer = null
+        loadingVideos = false
         channelListContainer = null
         searchField = null
         body.removeAllViews()
@@ -339,7 +360,7 @@ class MainActivity : AppCompatActivity() {
             R.id.nav_channels -> channelsPage()
             R.id.nav_account -> accountPage()
         }
-        if (videosContainer == null && channelListContainer == null) restoreScroll()
+        if (videosContainer == null && channelListContainer == null && !loadingVideos) restoreScroll()
     }
 
     private fun restoreScroll() {
@@ -355,7 +376,21 @@ class MainActivity : AppCompatActivity() {
             emptyState(R.drawable.ic_account, "请确认账号", app.accountIssue!!, "管理账号") { navigation.selectedItemId = R.id.nav_account }
             return
         }
-        val channels = app.database.channels()
+        val request = ++videoRequest
+        loadingVideos = true
+        body.addView(text("正在读取视频库…", 13).apply { setTextColor(muted()) })
+        queryWorker.execute {
+            val result = runCatching { app.database.channels() }
+            handler.post {
+                if (isDestroyed || request != videoRequest || destination != R.id.nav_videos) return@post
+                loadingVideos = false; body.removeAllViews()
+                result.onSuccess { buildVideosPage(it) }
+                    .onFailure { body.addView(emptyInline("读取视频库失败", "重试") { videosPage() }); restoreScroll() }
+            }
+        }
+    }
+
+    private fun buildVideosPage(channels: JSONArray) {
         if (channels.length() == 0) {
             videoHeader.visibility = View.GONE
             body.setPadding(dp(20), dp(12), dp(20), dp(24))
@@ -368,11 +403,12 @@ class MainActivity : AppCompatActivity() {
                     navigation.selectedItemId = if (status.optBoolean("connected")) R.id.nav_channels else R.id.nav_account
                 }
             )
+            restoreScroll()
             return
         }
 
         val searchBox = horizontalRow().apply {
-            gravity = Gravity.CENTER_VERTICAL; minimumHeight = dp(44)
+            gravity = Gravity.CENTER_VERTICAL; minimumHeight = dp(48)
             setPadding(dp(12), 0, dp(4), 0)
             background = rounded(color(com.google.android.material.R.attr.colorSurfaceContainerLow), 10)
         }
@@ -390,7 +426,7 @@ class MainActivity : AppCompatActivity() {
             hint = "搜索视频名称"
             contentDescription = "搜索视频名称"
             setTextSize(android.util.TypedValue.COMPLEX_UNIT_SP, 13f)
-            minHeight = dp(44)
+            minHeight = dp(48)
             // long: 搜索没有浮动标签，使用普通内边距，避免大字体沿用表单标签预留高度而裁切文字。
             background = null; gravity = Gravity.CENTER_VERTICAL; includeFontPadding = false
             setPadding(dp(10), dp(4), dp(4), dp(4)); setHintTextColor(muted())
@@ -423,7 +459,7 @@ class MainActivity : AppCompatActivity() {
         }
         searchField = searchInput
         searchBox.addView(searchInput, LinearLayout.LayoutParams(0, -2, 1f))
-        searchBox.addView(clearSearch, LinearLayout.LayoutParams(dp(44), dp(44)))
+        searchBox.addView(clearSearch, LinearLayout.LayoutParams(dp(48), dp(48)))
         videoHeader.addView(searchBox, rowParams())
 
         val channelsById = buildMap<Long, String> {
@@ -433,6 +469,7 @@ class MainActivity : AppCompatActivity() {
             }
         }
         val filters = horizontalRow().apply { gravity = Gravity.CENTER_VERTICAL }
+        val stackedFilters = resources.configuration.fontScale > 1.2f || resources.configuration.screenWidthDp < 360
         if (channelFilter != 0L && !channelsById.containsKey(channelFilter)) { channelFilter = 0; page = 0; pendingScrollRestore = 0 }
         val channelTitle = channelsById[channelFilter] ?: "全部频道"
         channelFilterButton = actionButton(
@@ -440,7 +477,7 @@ class MainActivity : AppCompatActivity() {
             style = ButtonStyle.TEXT,
             icon = R.drawable.ic_filter,
             action = { chooseVideoChannel(channels) }
-        ).apply { maxLines = 1; ellipsize = android.text.TextUtils.TruncateAt.END; gravity = Gravity.CENTER_VERTICAL }
+        ).apply { maxLines = if (stackedFilters) 2 else 1; ellipsize = android.text.TextUtils.TruncateAt.END; gravity = Gravity.CENTER_VERTICAL }
 
 
         val mode = MaterialButtonToggleGroup(this).apply {
@@ -449,8 +486,8 @@ class MainActivity : AppCompatActivity() {
         }
         val allId = View.generateViewId()
         val recentId = View.generateViewId()
-        mode.addView(segmentButton("全部视频", allId), LinearLayout.LayoutParams(0, dp(44), 1f))
-        mode.addView(segmentButton("最近播放", recentId), LinearLayout.LayoutParams(0, dp(44), 1f))
+        mode.addView(segmentButton("全部视频", allId), LinearLayout.LayoutParams(0, -2, 1f))
+        mode.addView(segmentButton("最近播放", recentId), LinearLayout.LayoutParams(0, -2, 1f))
         mode.check(if (recent) recentId else allId)
         mode.addOnButtonCheckedListener { _, checkedId, checked ->
             if (checked) {
@@ -460,8 +497,15 @@ class MainActivity : AppCompatActivity() {
                 showVideos()
             }
         }
-        filters.addView(mode, LinearLayout.LayoutParams(0, dp(44), 1f))
-        filters.addView(channelFilterButton, LinearLayout.LayoutParams(dp(124), dp(44)))
+        // long: 大字体与窄窗口分开频道筛选，保留两个浏览模式的完整文字和自然行高。
+        if (stackedFilters) {
+            filters.orientation = LinearLayout.VERTICAL
+            filters.addView(mode, LinearLayout.LayoutParams(-1, -2))
+            filters.addView(channelFilterButton, LinearLayout.LayoutParams(-1, -2))
+        } else {
+            filters.addView(mode, LinearLayout.LayoutParams(0, -2, 1f))
+            filters.addView(channelFilterButton, LinearLayout.LayoutParams(dp(124), -2))
+        }
         videoHeader.addView(filters, rowParams(bottom = 0))
         videoHeader.addView(divider())
 
@@ -493,14 +537,6 @@ class MainActivity : AppCompatActivity() {
 
     private fun showVideos(channelNames: Map<Long, String>? = null) {
         val target = videosContainer ?: return
-        val names = channelNames ?: app.database.channels().let { data ->
-            buildMap {
-                for (index in 0 until data.length()) {
-                    val channel = data.getJSONObject(index)
-                    put(channel.getLong("channel_id"), channel.optString("title", "Telegram 频道"))
-                }
-            }
-        }
         val request = ++videoRequest
         buttons.removeAll { it.parent === target }
         target.removeAllViews()
@@ -510,28 +546,44 @@ class MainActivity : AppCompatActivity() {
             trackColor = android.graphics.Color.TRANSPARENT
         }, LinearLayout.LayoutParams(-1, dp(2)))
         val query = search
-        val offset = page * PAGE_SIZE
         val selectedChannel = channelFilter
         val playbackOnly = recent
         val order = if (recent) recentSort else sort
+        val signature = JSONObject().put("search", query).put("channel", selectedChannel).put("recent", playbackOnly).put("sort", order).toString()
+        if (paginationSignature != signature) {
+            paginationSignature = signature; pageCursors.clear(); page = 0
+        }
+        val cursor = pageCursors[page]
+        val fallback = if (page > 0 && cursor == null) page * PAGE_SIZE else 0
         queryWorker.execute {
-            val rows = runCatching { app.database.videos(query, offset, PAGE_SIZE + 1, selectedChannel, playbackOnly, order) }
+            val rows = runCatching {
+                // long: 频道名和视频结果一并在后台读取，搜索输入与排序操作不等待主线程访问 SQLite。
+                val names = channelNames ?: app.database.channels().let { data ->
+                    buildMap { for (index in 0 until data.length()) {
+                        val channel = data.getJSONObject(index)
+                        put(channel.getLong("channel_id"), channel.optString("title", "Telegram 频道"))
+                    } }
+                }
+                app.database.videoPage(query, selectedChannel, playbackOnly, order, cursor, PAGE_SIZE, fallback) to names
+            }
             handler.post {
                 if (isDestroyed || request != videoRequest || videosContainer !== target) return@post
                 target.removeAllViews()
-                val result = rows.getOrNull()
-                if (result == null) {
+                val loaded = rows.getOrNull()
+                if (loaded == null) {
                     target.addView(text("读取视频失败，请稍后重试。", 14).apply {
                         setTextColor(color(com.google.android.material.R.attr.colorError))
                     })
                     return@post
                 }
+                val result = loaded.first.items
+                val names = loaded.second
                 if (result.length() == 0 && page > 0) {
-                    page = 0; pendingScrollRestore = 0; showVideos(names); return@post
+                    page = 0; pageCursors.clear(); pendingScrollRestore = 0; showVideos(names); return@post
                 }
                 val heading = horizontalRow().apply { gravity = Gravity.CENTER_VERTICAL; setPadding(0, dp(8), 0, dp(2)) }
                 heading.addView(text(if (query.isNotEmpty()) "搜索结果" else if (playbackOnly) "最近播放" else "视频列表", 14).apply { setTypeface(typeface, Typeface.BOLD) }, LinearLayout.LayoutParams(0, -2, 1f))
-                heading.addView(imageButton(R.drawable.ic_sort, "视频排序") { showSortPicker() }, LinearLayout.LayoutParams(dp(40), dp(40)))
+                heading.addView(imageButton(R.drawable.ic_sort, "视频排序") { showSortPicker() }, LinearLayout.LayoutParams(dp(48), dp(48)))
                 target.addView(heading)
                 if (result.length() == 0) {
                     val message = if (playbackOnly) "还没有播放记录" else "没有找到匹配的视频"
@@ -544,20 +596,21 @@ class MainActivity : AppCompatActivity() {
                     for (index in 0 until minOf(result.length(), PAGE_SIZE)) {
                         target.addView(videoRow(result.getJSONObject(index), names))
                     }
-                    val hasNext = result.length() > PAGE_SIZE
+                    val next = loaded.first.next
+                    val hasNext = next != null
                     if (page > 0 || hasNext) {
                         val pager = horizontalRow().apply {
                             gravity = Gravity.CENTER_VERTICAL
                             addView(actionButton("上一页", ButtonStyle.TEXT, R.drawable.ic_chevron_left) {
                                 if (page > 0) { page--; pendingScrollRestore = 0; showVideos(names) }
-                            }.apply { buttons.remove(this); isEnabled = page > 0 }, LinearLayout.LayoutParams(0, dp(48), 1f))
+                            }.apply { buttons.remove(this); isEnabled = page > 0 }, LinearLayout.LayoutParams(0, -2, 1f))
                             addView(text("第 ${page + 1} 页", 13).apply {
                                 gravity = Gravity.CENTER
                                 setTextColor(color(com.google.android.material.R.attr.colorOnSurfaceVariant))
                             }, LinearLayout.LayoutParams(dp(72), -2))
                             addView(actionButton("下一页", ButtonStyle.TEXT, R.drawable.ic_chevron_right) {
-                                if (hasNext) { page++; pendingScrollRestore = 0; showVideos(names) }
-                            }.apply { buttons.remove(this); isEnabled = hasNext }, LinearLayout.LayoutParams(0, dp(48), 1f))
+                                if (next != null) { pageCursors[page + 1] = next; page++; pendingScrollRestore = 0; showVideos(names) }
+                            }.apply { buttons.remove(this); isEnabled = hasNext }, LinearLayout.LayoutParams(0, -2, 1f))
                         }
                         target.addView(pager, rowParams(top = 8, bottom = 0))
                     }
@@ -576,7 +629,8 @@ class MainActivity : AppCompatActivity() {
             minimumHeight = dp(55)
             setPadding(0, dp(7), 0, dp(7))
             clickableRow(this) {
-                startActivity(Intent(this@MainActivity, VideoDetailActivity::class.java).putExtra("key", item.getString("key")))
+                startActivity(Intent(this@MainActivity, VideoDetailActivity::class.java).putExtra("key", item.getString("key"))
+                    .putExtra("queue_search", search).putExtra("queue_sort", if (recent) recentSort else sort))
             }
             contentDescription = "查看视频：$title，$channel" + if (published.isNotEmpty()) "，发布于 $published" else ""
         }
@@ -625,8 +679,8 @@ class MainActivity : AppCompatActivity() {
                 else beginScan(0, true, all = true)
             }
         }
-        bar.addView(updateAllButton, LinearLayout.LayoutParams(dp(44), dp(48)))
-        bar.addView(actionButton("添加频道", ButtonStyle.TEXT, R.drawable.ic_add) { showAddChannel() }.apply { textSize = 12f; iconSize = dp(17) }, LinearLayout.LayoutParams(-2, dp(44)))
+        bar.addView(updateAllButton, LinearLayout.LayoutParams(dp(48), dp(48)))
+        bar.addView(actionButton("添加频道", ButtonStyle.TEXT, R.drawable.ic_add) { showAddChannel() }.apply { textSize = 12f; iconSize = dp(17) }, LinearLayout.LayoutParams(-2, -2))
         body.addView(bar)
         val listHost = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         channelListContainer = listHost
@@ -737,7 +791,7 @@ class MainActivity : AppCompatActivity() {
                 background = rounded(color(com.google.android.material.R.attr.colorPrimaryContainer), 9)
             }, LinearLayout.LayoutParams(dp(30), dp(30)).apply { marginEnd = dp(10) })
             val copy = LinearLayout(this).apply {
-                orientation = LinearLayout.VERTICAL; gravity = Gravity.CENTER_VERTICAL; minimumHeight = dp(44)
+                orientation = LinearLayout.VERTICAL; gravity = Gravity.CENTER_VERTICAL; minimumHeight = dp(48)
                 clickableRow(this) { browseChannel(id) }
             }
             copy.addView(text(title, 13).apply { maxLines = 1; ellipsize = android.text.TextUtils.TruncateAt.END; setTypeface(typeface, Typeface.BOLD) })
@@ -758,8 +812,8 @@ class MainActivity : AppCompatActivity() {
                 }
             }
             channelRows[id] = ChannelRowState(channel, counts[id] ?: 0, stateLabel, update)
-            row.addView(update, LinearLayout.LayoutParams(dp(44), dp(48)))
-            row.addView(imageButton(R.drawable.ic_more, "$title 更多操作") { channelMenu(it, channel) }, LinearLayout.LayoutParams(dp(40), dp(44)))
+            row.addView(update, LinearLayout.LayoutParams(dp(48), dp(48)))
+            row.addView(imageButton(R.drawable.ic_more, "$title 更多操作") { channelMenu(it, channel) }, LinearLayout.LayoutParams(dp(48), dp(48)))
             host.addView(row); host.addView(divider())
         }
     }
@@ -949,11 +1003,27 @@ class MainActivity : AppCompatActivity() {
         body.addView(settingRow("播放手势", "操作说明", R.drawable.ic_info) {
             MaterialAlertDialogBuilder(this).setTitle("播放手势").setMessage(dev.longvideo.controls.R.string.pc_help_text).setPositiveButton("知道了", null).show()
         })
+        body.addView(settingRow("连续播放", if (preferences.continuous) "开启" else "关闭", R.drawable.ic_play) {
+            MaterialAlertDialogBuilder(this).setTitle("连续播放").setSingleChoiceItems(arrayOf("关闭", "开启"), if (preferences.continuous) 1 else 0) { dialog, index ->
+                preferences.continuous = index == 1; PlaybackService.applyContinuousPreference(); dialog.dismiss(); render()
+            }.show()
+        })
         body.addView(sectionHeader("账号与数据"))
         body.addView(settingRow("下载管理", "离线视频与下载任务", R.drawable.ic_download) {
             startActivity(Intent(this, DownloadsActivity::class.java))
         })
-        body.addView(settingRow("管理频道", "${app.database.channels().length()} 个", R.drawable.ic_channels) { navigation.selectedItemId = R.id.nav_channels })
+        val channelSetting = settingRow("管理频道", "正在统计", R.drawable.ic_channels) { navigation.selectedItemId = R.id.nav_channels }
+        body.addView(channelSetting)
+        queryWorker.execute {
+            val count = runCatching { app.database.channels().length() }.getOrNull()
+            handler.post {
+                if (!isDestroyed && channelSetting.isAttachedToWindow && destination == R.id.nav_account) {
+                    val row = (channelSetting as LinearLayout).getChildAt(0)
+                    (row.tag as? TextView)?.text = count?.let { "$it 个" } ?: "读取失败"
+                    row.contentDescription = "管理频道，" + (count?.let { "$it 个" } ?: "读取失败")
+                }
+            }
+        }
         body.addView(settingRow("本机索引", "索引说明", R.drawable.ic_video) {
             MaterialAlertDialogBuilder(this).setTitle("本机索引").setMessage("索引和播放记录保存在此设备。视频在播放时按需读取，不会自动下载完整视频。\n\n列表日期是 Telegram 消息发布时间，按设备时区显示。").setPositiveButton("关闭", null).show()
         })
@@ -996,13 +1066,17 @@ class MainActivity : AppCompatActivity() {
     }
     private fun settingRow(label: String, value: String, icon: Int, action: () -> Unit): View = LinearLayout(this).apply {
         orientation = LinearLayout.VERTICAL
-        val row = horizontalRow().apply {
+        val row = horizontalRow().apply settingsRow@ {
             gravity = Gravity.CENTER_VERTICAL; minimumHeight = dp(48)
             contentDescription = "$label，$value"
             clickableRow(this, action)
             addView(ImageView(this@MainActivity).apply { setImageResource(icon); imageTintList = ColorStateList.valueOf(muted()) }, LinearLayout.LayoutParams(dp(18), dp(18)).apply { marginEnd = dp(10) })
             addView(text(label, 13).apply { maxLines = 2 }, LinearLayout.LayoutParams(0, -2, 1f))
-            addView(text(value, 11).apply { setTextColor(muted()); setPadding(dp(6), 0, dp(5), 0) })
+            addView(text(value, 11).apply {
+                setTextColor(muted()); setPadding(dp(6), 0, dp(5), 0)
+                maxWidth = dp((resources.configuration.screenWidthDp / 3).coerceIn(72, 160)); maxLines = 2
+                ellipsize = android.text.TextUtils.TruncateAt.END; gravity = Gravity.END
+            }.also { this@settingsRow.tag = it })
             addView(ImageView(this@MainActivity).apply { setImageResource(R.drawable.ic_chevron_right); imageTintList = ColorStateList.valueOf(muted()) }, LinearLayout.LayoutParams(dp(14), dp(14)))
         }
         addView(row); addView(divider())
@@ -1035,12 +1109,19 @@ class MainActivity : AppCompatActivity() {
                     imeOptions = EditorInfo.IME_ACTION_DONE
                     setText(codeDraft); trackText { codeDraft = it }; isSaveEnabled = false
                 }
-                actionButton("确认验证码", ButtonStyle.FILLED, R.drawable.ic_arrow_right) {
+                val confirm = actionButton("确认验证码", ButtonStyle.FILLED, R.drawable.ic_arrow_right) {
+                    if (app.busy) return@actionButton
                     val value = code.text.toString().trim()
+                    if (value.isEmpty()) { code.error = "请输入 Telegram 验证码"; return@actionButton }
+                    code.error = null
                     code.text?.clear()
                     setActionsEnabled(false)
                     login { it.signIn(value) }
                 }.also { body.addView(it, rowParams()) }
+                // long: 键盘完成与按钮共用提交边界，空验证码给出提示，忙碌期间不能重复发起登录。
+                code.setOnEditorActionListener { _, action, _ ->
+                    if (action == EditorInfo.IME_ACTION_DONE) { if (confirm.isEnabled) confirm.performClick(); true } else false
+                }
                 actionButton("重新发送验证码", ButtonStyle.TEXT) {
                     if (phone.isBlank()) { message("返回填写手机号"); return@actionButton }
                     setActionsEnabled(false)
@@ -1049,14 +1130,22 @@ class MainActivity : AppCompatActivity() {
             }
             "password" -> {
                 val password = addInput("两步验证密码", InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD).apply {
+                    imeOptions = EditorInfo.IME_ACTION_DONE
                     setText(passwordDraft); trackText { passwordDraft = it }
                 }
-                actionButton("完成登录", ButtonStyle.FILLED, R.drawable.ic_arrow_right) {
+                val confirm = actionButton("完成登录", ButtonStyle.FILLED, R.drawable.ic_arrow_right) {
+                    if (app.busy) return@actionButton
                     val value = password.text.toString()
+                    // long: 密码中的空格是凭证的一部分，只拒绝空字符串，不能替用户去除首尾空格。
+                    if (value.isEmpty()) { password.error = "请输入两步验证密码"; return@actionButton }
+                    password.error = null
                     password.text?.clear()
                     setActionsEnabled(false)
                     login { it.submitPassword(value) }
                 }.also { body.addView(it, rowParams()) }
+                password.setOnEditorActionListener { _, action, _ ->
+                    if (action == EditorInfo.IME_ACTION_DONE) { if (confirm.isEnabled) confirm.performClick(); true } else false
+                }
             }
             else -> phoneLoginForm()
         }
@@ -1210,7 +1299,7 @@ class MainActivity : AppCompatActivity() {
             setPadding(0, dp(8), 0, dp(18))
         })
         content.addView(actionButton(command, ButtonStyle.FILLED, R.drawable.ic_arrow_right, action),
-            LinearLayout.LayoutParams(-1, dp(48)))
+            LinearLayout.LayoutParams(-1, -2))
         panel.addView(content)
         body.addView(panel, rowParams(top = 18))
     }
@@ -1226,7 +1315,7 @@ class MainActivity : AppCompatActivity() {
             setTextColor(color(com.google.android.material.R.attr.colorOnSurfaceVariant))
         })
         block.addView(actionButton(command, ButtonStyle.TEXT, R.drawable.ic_refresh, action),
-            LinearLayout.LayoutParams(-2, dp(48)).apply { topMargin = dp(7) })
+            LinearLayout.LayoutParams(-2, -2).apply { topMargin = dp(7) })
         return block
     }
 
@@ -1281,7 +1370,8 @@ class MainActivity : AppCompatActivity() {
     }).apply {
         text = label
         isAllCaps = false
-        minimumWidth = 0
+        minimumWidth = dp(48)
+        minWidth = dp(48)
         setPadding(dp(12), paddingTop, dp(12), paddingBottom)
         minHeight = dp(48)
         insetTop = 0
@@ -1308,10 +1398,10 @@ class MainActivity : AppCompatActivity() {
         text = label
         isAllCaps = false
         isCheckable = true
-        minimumWidth = 0
-        minWidth = 0
+        minimumWidth = dp(48)
+        minWidth = dp(48)
         setPadding(dp(8), paddingTop, dp(8), paddingBottom)
-        minHeight = dp(44)
+        minHeight = dp(48)
         strokeWidth = 0
         cornerRadius = dp(8)
         backgroundTintList = ColorStateList(arrayOf(intArrayOf(android.R.attr.state_checked), intArrayOf()), intArrayOf(color(com.google.android.material.R.attr.colorPrimaryContainer), android.graphics.Color.TRANSPARENT))
@@ -1388,8 +1478,8 @@ class MainActivity : AppCompatActivity() {
         row.addView(caption, LinearLayout.LayoutParams(0, -2, 1f))
         row.addView(imageButton(if (lastPlaying) R.drawable.ic_pause else R.drawable.ic_play, if (lastPlaying) "暂停播放" else "继续播放") {
             PlaybackService.togglePlayback(); updateMiniPlayer()
-        }, LinearLayout.LayoutParams(dp(44), dp(48)))
-        row.addView(imageButton(R.drawable.ic_stop, "停止播放") { PlaybackService.stopPlayback(this); updateMiniPlayer() }, LinearLayout.LayoutParams(dp(44), dp(48)))
+        }, LinearLayout.LayoutParams(dp(48), dp(48)))
+        row.addView(imageButton(R.drawable.ic_stop, "停止播放") { PlaybackService.stopPlayback(this); updateMiniPlayer() }, LinearLayout.LayoutParams(dp(48), dp(48)))
         miniPlayer.addView(row)
         queryWorker.execute {
             val title = runCatching {

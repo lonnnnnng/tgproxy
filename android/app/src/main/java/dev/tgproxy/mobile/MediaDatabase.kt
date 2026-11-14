@@ -7,7 +7,7 @@ import android.database.sqlite.SQLiteOpenHelper
 import org.json.JSONArray
 import org.json.JSONObject
 
-class MediaDatabase(context: Context, name: String = "media.db") : SQLiteOpenHelper(context, name, null, 3) {
+class MediaDatabase(context: Context, name: String = "media.db") : SQLiteOpenHelper(context, name, null, 4) {
     init { setWriteAheadLoggingEnabled(true) }
     override fun onCreate(db: SQLiteDatabase) {
         db.execSQL("CREATE TABLE videos (key TEXT PRIMARY KEY, channel_id INTEGER NOT NULL, name TEXT NOT NULL, payload TEXT NOT NULL, date INTEGER NOT NULL)")
@@ -17,8 +17,14 @@ class MediaDatabase(context: Context, name: String = "media.db") : SQLiteOpenHel
         createIndexes(db)
     }
     private fun createIndexes(db: SQLiteDatabase) {
-        db.execSQL("CREATE INDEX IF NOT EXISTS video_date ON videos(date DESC)")
-        db.execSQL("CREATE INDEX IF NOT EXISTS video_channel ON videos(channel_id,date DESC)")
+        db.execSQL("CREATE INDEX IF NOT EXISTS video_date ON videos(date DESC,key)")
+        db.execSQL("CREATE INDEX IF NOT EXISTS video_channel ON videos(channel_id,date DESC,key)")
+        db.execSQL("CREATE INDEX IF NOT EXISTS video_oldest ON videos(date ASC,key)")
+        db.execSQL("CREATE INDEX IF NOT EXISTS video_channel_oldest ON videos(channel_id,date ASC,key)")
+        db.execSQL("CREATE INDEX IF NOT EXISTS video_name ON videos(name COLLATE NOCASE,key)")
+        db.execSQL("CREATE INDEX IF NOT EXISTS video_channel_name ON videos(channel_id,name COLLATE NOCASE,key)")
+        db.execSQL("CREATE INDEX IF NOT EXISTS video_channel_key ON videos(channel_id,key)")
+        db.execSQL("CREATE INDEX IF NOT EXISTS playback_updated ON playback(updated DESC,key)")
     }
     override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) {
         if (oldVersion < 2) {
@@ -43,9 +49,14 @@ class MediaDatabase(context: Context, name: String = "media.db") : SQLiteOpenHel
                     putChannel(db, channel)
                 }
             }
-            createIndexes(db)
         }
         if (oldVersion < 3) db.execSQL("CREATE TABLE metadata (key TEXT PRIMARY KEY, value TEXT NOT NULL)")
+        if (oldVersion < 4) {
+            // long: 只重建排序索引，保留视频、频道和观看记录；同排序值的主键也进入索引以支持深页游标。
+            db.execSQL("DROP INDEX IF EXISTS video_date")
+            db.execSQL("DROP INDEX IF EXISTS video_channel")
+            createIndexes(db)
+        }
     }
     private fun putChannel(db: SQLiteDatabase, channel: JSONObject) {
         check(db.insertWithOnConflict("channels", null, ContentValues().apply {
@@ -61,6 +72,10 @@ class MediaDatabase(context: Context, name: String = "media.db") : SQLiteOpenHel
         for (i in 0 until rows.length()) {
             val row = rows.getJSONObject(i)
             require(row.getLong("channel_id") == channelID && row.getLong("message_id") > 0 && row.getString("key") == "${channelID}_${row.getLong("message_id")}")
+            val previous = video(row.getString("key"))
+            // long: 任何索引写入遇到换片都清掉旧断点，普通扫描重试也不能让新文档继承旧文件的位置。
+            if (previous != null && previous.optLong("document_id") != row.optLong("document_id"))
+                db.delete("playback", "key=?", arrayOf(row.getString("key")))
             check(db.insertWithOnConflict("videos", null, ContentValues().apply {
                 put("key", row.getString("key")); put("channel_id", channelID); put("name", row.getString("name"))
                 put("payload", row.toString()); put("date", row.getLong("date"))
@@ -129,21 +144,81 @@ class MediaDatabase(context: Context, name: String = "media.db") : SQLiteOpenHel
         } finally { db.endTransaction() }
     }
     fun videos(search: String = "", offset: Int = 0, limit: Int = 50, channelID: Long = 0, recent: Boolean = false, sort: String = "newest"): JSONArray {
-        val term = "%" + search.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%"
-        // long: LIKE 通配符由应用转义，用户可按字面搜索带下划线和百分号的文件名。
-        // long: 频道过滤单独生成条件才能使用频道索引；用户选定的排序必须是主排序。
-        val arguments = mutableListOf(term)
-        val filter = if (channelID > 0) { arguments.add(channelID.toString()); " AND v.channel_id=?" } else ""
-        val order = when (sort) { "watched" -> if (recent) "p.updated DESC,v.key" else "v.date DESC,v.key"; "oldest" -> "v.date ASC,v.key"; "name" -> "v.name COLLATE NOCASE,v.key"; else -> "v.date DESC,v.key" }
-        val sql = "SELECT v.payload FROM videos v " + (if (recent) "JOIN playback p ON p.key=v.key " else "") +
-            "WHERE v.name LIKE ? ESCAPE '\\'" + filter + " ORDER BY $order LIMIT ? OFFSET ?"
-        arguments.add(limit.coerceIn(1, 1000).toString()); arguments.add(offset.coerceAtLeast(0).toString())
-        return readableDatabase.rawQuery(sql, arguments.toTypedArray()).use {
+        val query = videoQuery(search, channelID, recent, sort, null)
+        val arguments = query.arguments + listOf(limit.coerceIn(1, 1000).toString(), offset.coerceAtLeast(0).toString())
+        return readableDatabase.rawQuery("SELECT v.payload " + query.sql + " LIMIT ? OFFSET ?", arguments.toTypedArray()).use {
             JSONArray().apply { while (it.moveToNext()) put(JSONObject(it.getString(0))) }
+        }
+    }
+    private data class VideoQuery(val sql: String, val arguments: List<String>, val value: String, val sort: String)
+    private fun videoQuery(search: String, channelID: Long, recent: Boolean, requestedSort: String, cursor: VideoPageCursor?): VideoQuery {
+        val sort = when (requestedSort) { "name", "oldest" -> requestedSort; "watched" -> if (recent) "watched" else "newest"; else -> "newest" }
+        val value = when (sort) { "name" -> "v.name COLLATE NOCASE"; "watched" -> "p.updated"; else -> "v.date" }
+        val key = if (sort == "watched") "p.key" else "v.key"
+        val descending = sort in setOf("newest", "watched")
+        val filters = mutableListOf<String>()
+        val arguments = mutableListOf<String>()
+        // long: 空搜索无需 LIKE 扫描；有输入时仍按字面子串匹配，不改变百分号、下划线与反斜线语义。
+        if (search.isNotEmpty()) {
+            filters.add("v.name LIKE ? ESCAPE '\\'")
+            arguments.add("%" + search.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%")
+        }
+        if (channelID > 0) { filters.add("v.channel_id=?"); arguments.add(channelID.toString()) }
+        if (cursor != null) {
+            require(cursor.sort == sort) { "分页排序已经变化，请重新查询" }
+            // long: 先按排序值定位范围，再以唯一主键处理同日期和同名条目，深页无需逐个跳过前页。
+            val compare = if (descending) "<" else ">"
+            filters.add("$value $compare=? AND ($value $compare ? OR $key>?)")
+            arguments.add(cursor.value); arguments.add(cursor.value); arguments.add(cursor.key)
+        }
+        val from = if (recent) "FROM playback p JOIN videos v ON p.key=v.key" else "FROM videos v"
+        val where = if (filters.isEmpty()) "" else " WHERE " + filters.joinToString(" AND ")
+        return VideoQuery(from + where + " ORDER BY $value " + (if (descending) "DESC" else "ASC") + ",$key ASC", arguments, value, sort)
+    }
+    fun videoPage(search: String = "", channelID: Long = 0, recent: Boolean = false, sort: String = "newest",
+        cursor: VideoPageCursor? = null, limit: Int = 50, offsetFallback: Int = 0): VideoPage {
+        val query = videoQuery(search, channelID, recent, sort, cursor)
+        val size = limit.coerceIn(1, 1000)
+        val offset = if (cursor == null) offsetFallback.coerceAtLeast(0) else 0
+        val arguments = query.arguments + listOf((size + 1).toString(), offset.toString())
+        return readableDatabase.rawQuery("SELECT v.payload,v.key," + query.value + " " + query.sql + " LIMIT ? OFFSET ?", arguments.toTypedArray()).use { result ->
+            val rows = JSONArray()
+            var last: VideoPageCursor? = null
+            var more = false
+            while (result.moveToNext()) {
+                if (rows.length() == size) { more = true; break }
+                rows.put(JSONObject(result.getString(0)))
+                last = VideoPageCursor(query.sort, result.getString(2), result.getString(1))
+            }
+            VideoPage(rows, if (more) last else null)
         }
     }
     fun video(key: String): JSONObject? = readableDatabase.rawQuery("SELECT payload FROM videos WHERE key=?", arrayOf(key)).use {
         if (it.moveToFirst()) JSONObject(it.getString(0)) else null
+    }
+    fun <T> withOwner(owner: Long, read: () -> T): T {
+        val db = readableDatabase; db.beginTransaction()
+        try {
+            // long: 播放列表在同一归属快照查询，账号切换不能让旧播放器取到新账号的频道内容。
+            check(owner > 0 && ownerID() == owner) { "当前账号与播放列表不一致" }
+            val value = read(); db.setTransactionSuccessful(); return value
+        } finally { db.endTransaction() }
+    }
+    fun adjacentVideo(key: String, channelID: Long, search: String, sort: String, forward: Boolean): JSONObject? {
+        val query = videoQuery(search, channelID, false, sort, null)
+        val current = readableDatabase.rawQuery("SELECT " + query.value + ",v.key FROM videos v WHERE v.key=?", arrayOf(key)).use {
+            if (it.moveToFirst()) VideoPageCursor(query.sort, it.getString(0), it.getString(1)) else null
+        } ?: return null
+        if (forward) return videoPage(search, channelID, sort = query.sort, cursor = current, limit = 1).items.optJSONObject(0)
+        val descending = query.sort == "newest"
+        val compare = if (descending) ">" else "<"
+        val base = query.sql.substringBefore(" ORDER BY ")
+        val where = if (base.contains(" WHERE ")) " AND " else " WHERE "
+        // long: 前一条反向查询并反转主键顺序，重名和同秒发布的视频也只移动一个位置。
+        val clause = query.value + " $compare=? AND (" + query.value + " $compare ? OR v.key<?)"
+        val sql = "SELECT v.payload " + base + where + clause + " ORDER BY " + query.value + (if (descending) " ASC" else " DESC") + ",v.key DESC LIMIT 1"
+        val arguments = query.arguments + listOf(current.value, current.value, current.key)
+        return readableDatabase.rawQuery(sql, arguments.toTypedArray()).use { if (it.moveToFirst()) JSONObject(it.getString(0)) else null }
     }
     fun count(channelID: Long = 0): Long = readableDatabase.rawQuery(if (channelID > 0) "SELECT COUNT(*) FROM videos WHERE channel_id=?" else "SELECT COUNT(*) FROM videos", if (channelID > 0) arrayOf(channelID.toString()) else null).use { it.moveToFirst(); it.getLong(0) }
     fun ownerID(): Long = readableDatabase.rawQuery("SELECT value FROM metadata WHERE key='account_id'", null).use { if (it.moveToFirst()) it.getString(0).toLongOrNull() ?: 0 else 0 }
@@ -183,17 +258,36 @@ class MediaDatabase(context: Context, name: String = "media.db") : SQLiteOpenHel
         ch.remove("recheck_key"); ch.put("checked", System.currentTimeMillis()); putChannel(writableDatabase, ch)
     }
     fun position(key: String): Long = readableDatabase.rawQuery("SELECT position FROM playback WHERE key=?", arrayOf(key)).use { if (it.moveToFirst()) it.getLong(0) else 0L }
-    fun savePosition(key: String, position: Long, expectedDocument: Long? = null, expectedOwner: Long? = null) {
+    fun checkpoint(key: String, expectedDocument: Long? = null, expectedOwner: Long? = null): PlaybackCheckpoint? {
+        val db = readableDatabase
+        db.beginTransaction()
+        try {
+            // long: 归属、文档和观看位置在同一数据库快照读取，账号清理不能夹在两次查询之间串用记录。
+            val video = video(key) ?: return null
+            if ((expectedDocument != null && video.optLong("document_id") != expectedDocument) || (expectedOwner != null && ownerID() != expectedOwner)) return null
+            val checkpoint = db.rawQuery("SELECT position,updated FROM playback WHERE key=?", arrayOf(key)).use {
+                if (it.moveToFirst()) PlaybackCheckpoint(it.getLong(0).coerceAtLeast(0), it.getLong(1).coerceAtLeast(0)) else null
+            }
+            db.setTransactionSuccessful()
+            return checkpoint
+        } finally { db.endTransaction() }
+    }
+    fun savePosition(key: String, position: Long, expectedDocument: Long? = null, expectedOwner: Long? = null,
+        updated: Long = System.currentTimeMillis()): Boolean {
         val db = writableDatabase; db.beginTransaction()
         try {
             val row = video(key)
+            val newer = db.rawQuery("SELECT updated FROM playback WHERE key=?", arrayOf(key)).use { it.moveToFirst() && it.getLong(0) > updated }
+            var saved = false
             // long: 校验换片、删除或退出账号后，仍存活的播放器不能把旧文件断点写回新索引。
-            if (row != null && (expectedDocument == null || row.optLong("document_id") == expectedDocument) && (expectedOwner == null || ownerID() == expectedOwner)) {
-                db.insertWithOnConflict("playback", null, ContentValues().apply {
-                    put("key", key); put("position", position.coerceAtLeast(0)); put("updated", System.currentTimeMillis())
-                }, SQLiteDatabase.CONFLICT_REPLACE)
+            if (!newer && row != null && (expectedDocument == null || row.optLong("document_id") == expectedDocument) && (expectedOwner == null || ownerID() == expectedOwner)) {
+                check(db.insertWithOnConflict("playback", null, ContentValues().apply {
+                    put("key", key); put("position", position.coerceAtLeast(0)); put("updated", updated.coerceAtLeast(0))
+                }, SQLiteDatabase.CONFLICT_REPLACE) != -1L) { "观看记录未能保存" }
+                saved = true
             }
             db.setTransactionSuccessful()
+            return saved
         } finally { db.endTransaction() }
     }
     fun clear() {

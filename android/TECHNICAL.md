@@ -1,6 +1,6 @@
 # TGProxy Android 技术说明
 
-本文描述 Android 0.6.0 的模块职责、数据格式和生命周期约束。产品范围与操作流程见 [README.md](README.md)；设备和构建验收结果见 [VERIFICATION.md](VERIFICATION.md)。
+本文描述Android 0.7.0的模块职责、数据格式和生命周期约束。产品范围与操作流程见[README.md](README.md)；本轮优化结果见[验收报告](../docs/APP-OPTIMIZATION-20261115.md)，设备及发布验收见[VERIFICATION.md](VERIFICATION.md)。
 
 ## 运行结构
 
@@ -11,6 +11,8 @@ flowchart TD
     APP --> VAULT[Android Keystore + AtomicFile]
     APP --> AAR[gomobile ARM64 AAR]
     SCAN[ScanService 前台数据同步] --> APP
+    DOWNLOAD[DownloadService 下载] --> APP
+    EXPORT[ExportService 另存] --> APP
     PLAYER[PlaybackService / MediaSession] --> DB
     PLAYER --> AAR
     AAR --> HTTP[127.0.0.1 随机端口 / Bearer token]
@@ -34,10 +36,13 @@ gotd/td 和 TDL 的相关 Go 库会编译进 AAR，手机无需另行安装它�
 | [ChannelUpdateButton.kt](app/src/main/java/dev/tgproxy/mobile/ChannelUpdateButton.kt) | 小图标、点击区域与动画生命周期 |
 | [PlaybackService.kt](app/src/main/java/dev/tgproxy/mobile/PlaybackService.kt) | ExoPlayer、MediaSession 和媒体鉴权 |
 | [PlayerActivity.kt](app/src/main/java/dev/tgproxy/mobile/PlayerActivity.kt) | 播放控制器、界面和音轨诊断 |
+| [PlaybackHistory.kt](app/src/main/java/dev/tgproxy/mobile/PlaybackHistory.kt) / [PlaybackCatalog.kt](app/src/main/java/dev/tgproxy/mobile/PlaybackCatalog.kt) | 同媒体观看记录、播放范围与分页选片 |
+| [Downloads.kt](app/src/main/java/dev/tgproxy/mobile/Downloads.kt) / [DownloadStore.kt](app/src/main/java/dev/tgproxy/mobile/DownloadStore.kt) | 下载调度、状态快照和独立下载库 |
+| [Exports.kt](app/src/main/java/dev/tgproxy/mobile/Exports.kt) / [ExportStore.kt](app/src/main/java/dev/tgproxy/mobile/ExportStore.kt) | 文件提供器复制、取消及持久导出记录 |
 | [Go 手机接口](../tgproxy/mobile/index.go) | 频道枚举、单页扫描与按需视频注册 |
 | [Telegram 索引适配](../tgproxy/internal/telegram/mobile_index.go) | dialogs 枚举、历史页提取与原始消息游标 |
 
-`TgApplication` 持有一个 `Engine`、一个 SQLite helper、Keystore vault 和单线程操作 executor。登录、频道枚举和扫描等会改变 Telegram client 状态的操作进入该 executor，完成后在主线程回调 UI。播放 HTTP 请求独立运行于 Go 内置 loopback server。
+`TgApplication`持有一个`Engine`、媒体索引／下载／导出的SQLite helpers、Keystore vault和单线程操作executor。登录、频道枚举和扫描等会改变Telegram client状态的操作进入该executor，完成后在主线程回调UI；下载、导出和播放媒体查询分别使用独立队列。播放HTTP请求独立运行于Go内置loopback server。
 
 ## 登录和凭证
 
@@ -82,7 +87,7 @@ SQLite 每页事务原子写入视频和频道 payload。只有成功提交整�
 
 ## SQLite schema
 
-数据库版本为 3，开启 WAL。v2 → v3 仅新增 `metadata` 表保存索引账号归属，保留原视频、频道和播放记录。
+媒体索引数据库版本为4，开启WAL。v2→v3新增`metadata`保存索引账号归属；v3→v4只重建／增加排序索引，保留视频、频道和观看数据。日期升降序、名称、频道内日期／名称／主键和观看时间均有对应索引。
 
 | 表 | 主要列 | 用途 |
 | --- | --- | --- |
@@ -93,7 +98,7 @@ SQLite 每页事务原子写入视频和频道 payload。只有成功提交整�
 
 首次数据库版本为 1：视频行不带 `channel_id`，频道表固定使用 `id=1`，播放表只有 key 和 position。升级到 v2 时通过 ALTER TABLE 保留原行，逐个解析现有 video payload 写入 channel ID；从旧频道 payload 迁移频道展示数据；已知视频中的最小、最大消息 ID 分别作为初始历史游标和最新高水位。播放位置保留，新增 `updated` 列默认 0。迁移不依赖 SQLite JSON extension，也不销毁旧数据。
 
-搜索使用参数绑定，并转义反斜线、百分号和下划线后交给 `LIKE ... ESCAPE`，文件名中的这些字符按普通文字匹配。每页最多展示 50 条，额外读取一条用于判断是否有下一页。指定频道时生成独立的 `channel_id=?` 条件，以使用频道索引；不再使用可选频道 OR 表达式。最近播放默认按观看时间排序，也可明确选择发布时间或名称。数据减少导致页码越界时返回第一页；退出账号清空旧筛选和页码。
+空搜索不执行LIKE；非空搜索仍通过参数绑定和`LIKE ... ESCAPE`按字面子串匹配，反斜线、百分号和下划线视为普通文字。每页最多50条，额外读取一条判断下一页。`VideoPageCursor`保存排序值和唯一key，日期／名称／观看时间的同值条目按key处理，向后分页无需跳过全部前页；缺失旧页游标时允许OFFSET回退。指定频道生成独立`channel_id=?`条件以使用索引。最近播放默认按观看时间排序，也可选择发布时间或名称；数据减少导致越界时回到第一页，退出账号清空旧筛选和页码。
 
 ## Range 播放和 MediaSession
 
@@ -104,6 +109,10 @@ Android `PlaybackService` 持有 ExoPlayer 和 MediaSession，负责音频焦点
 MediaSession callback 只接受同 application UID 的 controller。App 使用 `OPEN` 自定义 SessionCommand 传入索引 key，服务在后台读取 SQLite payload、向 Go 注册视频，再生成本机 URL；成功后才在主线程准备播放，失败以 SessionResult 返回页面。打开请求使用代次和 Engine 身份校验，停止／换账号／后发请求使旧结果失效。明确播放同一媒体时恢复暂停、结束或错误；生命周期重绑保持原有状态。页面不会将旧视频当作失败的目标资源展示。调用者不能直接指定 URI，因此不会把认证 header 转发至任意服务器。认证 header 只配置到 Media3 使用的本机 HTTP data source。
 
 Go Range 缓存采用 512 KiB chunk、64 MiB LRU 容量、3 个顺序预取块；同一 source resolution 缓存 1 分钟，最多 32 项。Android 使用 Media3 `DefaultHttpDataSource`/ExoPlayer 读取本机流。服务按请求范围取流，支持跳播，无需先下载完整视频。
+
+`QUEUE`与`OPEN`同样限制同UID。`PlaybackCatalog`沿用频道、名称／日期排序和搜索范围，索引选片最终打开时再次优先同document的完成文件；下载管理只查询该账号的本机完成项。文字选片每页50项。连续播放默认关闭，服务在ENDED时查询下一条；暂停、换片、换账号和新请求撤销迟到的自动切换／恢复。
+
+页面为每次明确选片生成UUID，服务在成功接受后保留最近32个兑现标记。Activity解绑后即使丢失OPEN回调，重绑仍可识别该选择已完成并跟随后台下一条；标记随服务停止清空。同document切换在线／本机来源时继承即时位置，已ENDED使用0从头重播。`PlaybackRetryPolicy`对终止网络错误使用1／2／4秒退避、最多三次，并尊重最多30秒的数字Retry-After；稳定播放10秒重置次数，权限、换片和解码错误不自动恢复。
 
 ## 可复用播放控制
 
@@ -144,7 +153,7 @@ Gradle 配置固定 compile/target SDK 36、min SDK 26、JDK 17、Kotlin JVM tar
 - 当前只构建和验证 ARM64 手机 ABI。
 - Debug 和 Release 使用不同 UID，包数据和 Keystore 密钥彼此隔离；Release 首次登录。
 - App 预设 API ID/Hash 只用于私下验证，不应作为公开发行应用凭证。
-- Android v2 migration 已覆盖验证版 v1 schema；更高版本升级需要继续增加显式迁移。
+- 当前显式迁移保留索引v1→v4／v3→v4及下载v1→v2数据；未来schema变化继续添加迁移，不能清库替代。
 - 前台索引受 Android foreground-service 配额和系统终止策略限制；页事务游标保证可续扫，但不保证后台无限运行。
 - 音轨识别能报告已发现和已选择的音轨，不保证所有 Telegram 视频容器、编码和设备解码器都兼容。
 
@@ -163,13 +172,25 @@ Go chunkSource 共享有效 DC／location 与版本；过期引用刷新合并�
 
 ## 持久下载与离线播放
 
-`DownloadStore` 独立维护 `downloads.db`，记录任务 UUID、原账号 ID、视频元数据快照、document ID、状态、字节数和离线播放位置。频道索引 schema 保持 v3；下载不随移除频道或退出账号清空。文件路径只由验证过的 UUID 生成，保存到 `filesDir/downloads/`，不使用远端文件名构造路径。写入使用 `.part`，完整长度验证、fsync 和改名后才标记 COMPLETE；启动恢复处理中任务为 PAUSED，并识别“文件已改名、状态未提交”的中断窗口。
+`DownloadStore`独立维护schema2的`downloads.db`，保存任务UUID、原账号ID、视频快照、document、状态、字节数、position和watched。v1→v2保留原断点，未知观看时间记0；媒体索引schema为4。下载不随移除频道或退出账号清空。文件路径只由校验过的UUID生成，保存到`filesDir/downloads/`。写入`.part`，完整长度验证、fsync和改名后才标记COMPLETE；启动恢复处理中任务为PAUSED，并识别“已改名但状态未提交”的中断窗口。损坏记录和删除失败逐条隔离，坏UUID只删除数据库行，不猜测文件路径。
 
 `Downloads` 使用独立命令与传输线程，串行下载，不占用登录／扫描操作队列或 Media3 播放器。命令、进度和最终提交共享锁；暂停关闭当前 HTTP 连接，取消删除等待写入者结束，避免迟到回调恢复已删除任务。元数据快照供页面与通知读取，不在每次 UI 刷新时扫描 SQLite。进程退出不自动继续，用户点击后启动 `DownloadService` 的 dataSync 前台服务，提供通知和有超时上限的 CPU 唤醒锁；系统服务时限或服务退出保存暂停状态。
 
 `DownloadTransfer` 每次请求 1 MiB Range，检查 206、Content-Range 起止／总长及 ETag。Go ETag 来自实际 source CacheKey（Telegram document ID 和大小），If-Match 不符时返回 412；断点旁保存 ETag，首次请求也核对索引中的 document ID。相同消息换片且大小相同也不能拼接。HTTP 禁止跳转，Bearer 只向当前 Engine 的回环地址发送；URL 和令牌不持久化。重新授权／退出会暂停任务，每段及结束时验证 Engine 和账号身份，继续下载只能使用原账号。
 
-下载完成后通过 `download:<UUID>` 发送已有受信任 OPEN 命令；PlaybackService 从 DownloadStore 验证完成状态和本机长度后建立 file URI，不接受外部任意路径。离线播放与通知恢复不要求 Telegram Engine；断点写入下载库，详情文案读取同一位置。`DownloadsActivity` 通过 ACTION_CREATE_DOCUMENT 让用户选择导出位置，在后台复制已完成文件；导出副本由用户独立管理，不申请全盘存储权限。
+下载完成后通过`download:<UUID>`发送受信任OPEN；PlaybackService验证完成状态和长度后建立file URI。离线播放与通知恢复不要求Telegram Engine。`PlaybackHistory`按同账号、key和document核对身份，比较两来源的观看时间；看完归零仍算新记录。在线进度同步同一完成文件，离线观看在当前索引仍属于该账号与document时同步最近播放，退出账号后仍独立保存本机断点。另一数据库暂不可读时继续采用当前来源的断点。
+
+`Downloads`的初始化和调度外层统一收尾，异常后可以重新读取并启动；`DownloadStoragePolicy`为断点和SQLite预留16MiB，剩余空间不足时暂停整批。批量继续／失败重试只恢复原账号的有效记录。`DownloadSnapshot`在后台维护状态、统计和身份索引，进度用`SingleItemList`更新当前记录，不反复读取完整JSON历史；页面改为RecyclerView／ListAdapter，每批50行并只刷新当前可见下载。
+
+## 持久另存与取消
+
+`DownloadsActivity`通过ACTION_CREATE_DOCUMENT获得目标URI和实际读写授权，交给应用级`Exports`。`ExportStore`的独立`exports.db` schema1保存导出UUID、下载UUID、账号／document、URI、状态、字节数、touched、persisted和创建时间；复制按rowid入队顺序串行执行，历史每页50条。
+
+启动将QUEUED／RUNNING／CANCELLING恢复为INTERRUPTED，保留结果并要求重新选位置。目标先查询SIZE确认空文件，再用`openFileDescriptor("wt", CancellationSignal)`复制；已有内容或无法确认空目标时拒绝覆盖。`ExportTransfer`用64KiB缓冲检查完整源长度、节流进度，并独立保留已完整写入块的字节数。完成提交与取消共用锁，流和FD在finally关闭；独立关闭线程避免提供器延迟阻塞页面。
+
+`ExportService`使用dataSync前台服务、通知取消和有时限的唤醒锁。通知取消产生新的startId，空闲回调使用最新编号停止并释放锁；系统超时立即停止服务。服务停止通过全表SQL标记未完成任务，不受历史页上限限制，迟到的旧lease不能暂停新任务。
+
+只有系统实际返回持久授权时才takePersistableUriPermission，mode仅包含获授的READ／WRITE。失败、取消或中断不自动删除目标；用户确认清理后再次检查终态、touched、活动写入者和其他导出引用，避免删除正在使用的副本。另存副本独立于下载任务，不申请全盘权限。本轮真实SAF验收覆盖POCO的本机Download提供器；云提供器即时取消及长期后台行为另需验证。
 
 官方依据：[dataSync 前台服务](https://developer.android.com/develop/background-work/services/fgs/service-types#data-sync)、[系统文件创建与导出](https://developer.android.com/training/data-storage/shared/documents-files#create-file)。后台运行受系统限制，无法保证无限持续下载；网络中断失败后保留断点，由用户重试。播放与下载共享 Telegram 网络和带宽，当前下载并发为 1。
 

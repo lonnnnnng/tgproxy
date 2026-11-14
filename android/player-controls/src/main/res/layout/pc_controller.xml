@@ -1,12 +1,12 @@
 <merge xmlns:android="http://schemas.android.com/apk/res/android" xmlns:app="http://schemas.android.com/apk/res-auto">
     <LinearLayout
-        android:layout_width="match_parent" android:layout_height="80dp"
+        android:layout_width="match_parent" android:layout_height="wrap_content" android:minHeight="80dp"
         android:layout_gravity="top" android:gravity="top" android:paddingTop="8dp"
         android:paddingHorizontal="8dp" android:background="@drawable/pc_top_shade">
         <ImageButton android:id="@+id/pc_back" style="@style/PcIcon"
             android:src="@drawable/pc_back" android:contentDescription="@string/pc_back" />
         <LinearLayout android:layout_width="0dp" android:layout_weight="1"
-            android:layout_height="48dp" android:orientation="vertical" android:gravity="center_vertical"
+            android:layout_height="wrap_content" android:minHeight="48dp" android:orientation="vertical" android:gravity="center_vertical"
             android:layout_marginHorizontal="8dp">
             <TextView android:id="@+id/pc_title" android:layout_width="match_parent" android:layout_height="wrap_content"
                 android:textColor="#FFFFFF" android:textSize="14sp" android:fontFamily="sans-serif-medium"
@@ -33,6 +33,9 @@
     <LinearLayout android:id="@id/exo_center_controls"
         android:layout_width="wrap_content" android:layout_height="80dp" android:layout_gravity="center"
         android:gravity="center" android:layoutDirection="ltr">
+        <ImageButton android:id="@+id/pc_previous" style="@style/PcIcon"
+            android:layout_marginEnd="8dp" android:visibility="gone"
+            android:src="@drawable/pc_previous" android:contentDescription="@string/pc_previous" />
         <ImageButton android:id="@id/exo_rew" style="@style/PcIcon"
             android:layout_width="56dp" android:layout_height="56dp" android:layout_marginEnd="24dp"
             android:src="@drawable/pc_rewind" android:contentDescription="@string/pc_seek_back" />
@@ -41,13 +44,17 @@
         <ImageButton android:id="@id/exo_ffwd" style="@style/PcIcon"
             android:layout_width="56dp" android:layout_height="56dp" android:layout_marginStart="24dp"
             android:src="@drawable/pc_forward" android:contentDescription="@string/pc_seek_forward" />
+        <ImageButton android:id="@+id/pc_next" style="@style/PcIcon"
+            android:layout_marginStart="8dp" android:visibility="gone"
+            android:src="@drawable/pc_next" android:contentDescription="@string/pc_next" />
     </LinearLayout>
 
-    <LinearLayout android:layout_width="match_parent" android:layout_height="144dp"
+    <!-- long: 控制文字随系统字号自然增长，避免标题/来源和播放时间被固定高度裁切。 -->
+    <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:minHeight="144dp"
         android:layout_gravity="bottom" android:orientation="vertical" android:gravity="bottom"
         android:paddingHorizontal="16dp" android:paddingTop="12dp" android:background="@drawable/pc_bottom_shade"
         android:layoutDirection="ltr">
-        <LinearLayout android:layout_width="match_parent" android:layout_height="24dp">
+        <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:minHeight="24dp">
             <TextView android:id="@id/exo_position" style="@style/PcTime" />
             <View android:layout_width="0dp" android:layout_height="1dp" android:layout_weight="1" />
             <TextView android:id="@id/exo_duration" style="@style/PcTime" />

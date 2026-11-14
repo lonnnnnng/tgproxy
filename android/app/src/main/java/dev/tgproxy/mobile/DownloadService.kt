@@ -44,7 +44,7 @@ class DownloadService : Service() {
     private fun notification(): android.app.Notification {
         val pause = PendingIntent.getService(this, 21, Intent(this, DownloadService::class.java).setAction(PAUSE), PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
         val open = PendingIntent.getActivity(this, 22, Intent(this, DownloadsActivity::class.java), PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
-        val current = downloads.records.firstOrNull { it.state == DownloadState.RUNNING }
+        val current = downloads.activeRecord
         return NotificationCompat.Builder(this, CHANNEL).setSmallIcon(R.drawable.ic_download)
             .setContentTitle(current?.name ?: "视频下载")
             .setContentText(current?.let { "${MediaPresentation.size(it.bytes)} / ${MediaPresentation.size(it.size)}" } ?: "正在准备下载…")

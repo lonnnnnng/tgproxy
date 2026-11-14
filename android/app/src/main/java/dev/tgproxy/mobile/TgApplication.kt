@@ -17,6 +17,10 @@ class TgApplication : Application() {
         private set
     lateinit var downloads: Downloads
         private set
+    lateinit var history: PlaybackHistory
+        private set
+    lateinit var exports: Exports
+        private set
     @Volatile var engine: Engine? = null
         private set
     @Volatile var startupError: String? = null
@@ -46,6 +50,8 @@ class TgApplication : Application() {
         vault = SessionVault(this)
         database = MediaDatabase(this)
         downloads = Downloads(this, DownloadStore(this))
+        history = PlaybackHistory(database, downloads.store)
+        exports = Exports(this, ExportStore(this))
         initialize()
     }
 

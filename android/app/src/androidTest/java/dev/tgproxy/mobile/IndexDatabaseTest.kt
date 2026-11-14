@@ -141,6 +141,36 @@ class IndexDatabaseTest {
         } } finally { context.deleteDatabase(name) }
     }
 
+    @Test fun cursorPagesMatchOffsetAcrossTiesSearchesAndChannels() {
+        val name = "cursor-" + UUID.randomUUID() + ".db"
+        try { MediaDatabase(context, name).use { db ->
+            for (channelID in 1L..2L) {
+                db.addChannel(channel(channelID))
+                val rows = JSONArray()
+                for (id in 1L..40L) rows.put(video(channelID, id, arrayOf("Alpha.mp4", "alpha.mp4", "ALPHA.mp4", "视频_%\\.mp4")[(id % 4).toInt()])
+                    .put("date", id / 3))
+                db.applyPage(channelID, page(0, 40, true).put("items", rows), false)
+                for (id in 1L..40L step 2) db.savePosition(channelID.toString() + "_" + id, 1000)
+            }
+            db.writableDatabase.execSQL("UPDATE playback SET updated=length(key)%3")
+            for (order in arrayOf("newest", "oldest", "name", "watched")) for (filter in arrayOf(0L, 1L, 2L))
+                for (search in arrayOf("", "a", "_", "%", "\\")) for (size in arrayOf(1, 7)) {
+                    val recent = order == "watched"
+                    val expected = db.videos(search, limit = 1000, channelID = filter, recent = recent, sort = order)
+                        .let { rows -> (0 until rows.length()).map { rows.getJSONObject(it).getString("key") } }
+                    val actual = mutableListOf<String>()
+                    var cursor: VideoPageCursor? = null
+                    do {
+                        val page = db.videoPage(search, filter, recent, order, cursor, size)
+                        for (index in 0 until page.items.length()) actual.add(page.items.getJSONObject(index).getString("key"))
+                        cursor = page.next?.let { VideoPageCursor.decode(it.encode()) }
+                    } while (cursor != null)
+                    assertEquals("游标改变了排序或遗漏同值条目", expected, actual)
+                    assertEquals(actual.size, actual.toSet().size)
+                }
+        } } finally { context.deleteDatabase(name) }
+    }
+
     @Test fun largeLibraryChannelQueriesStayBounded() {
         val name="large-${UUID.randomUUID()}.db"
         try { MediaDatabase(context,name).use { db ->
