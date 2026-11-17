@@ -6,7 +6,7 @@ tgproxy 负责索引、媒体树和稳定的 Range 读取；视频浏览、元�
 
 ## 当前版本
 
-- 最新发行版：[v0.3.2](https://github.com/lonnnnnng/tgproxy/releases/tag/v0.3.2)
+- 最新发行版：[v0.3.3](https://github.com/lonnnnnng/tgproxy/releases/tag/v0.3.3)
 - 线上控制台：[http://192.168.1.2:8080/](http://192.168.1.2:8080/)
 - 线上 Emby：[http://192.168.1.2:8096/](http://192.168.1.2:8096/)
 - 当前部署方式：Linux/amd64 静态二进制 + `systemd --user`
@@ -16,6 +16,12 @@ tgproxy 负责索引、媒体树和稳定的 Range 读取；视频浏览、元�
 - Emby 媒体库列表请求增加重试，避免瞬时失败导致新频道未建库
 - 启动时自动补齐缺失的频道媒体库
 - 建库后配置读取失败时保留已创建的库，下次启动自动补配置
+
+## v0.3.3 变更
+
+- Emby API Key 改由 `X-Emby-Token` 请求头传递，避免密钥出现在 URL 查询参数
+- 频道媒体目录删除限制在媒体根目录内，并拒绝符号链接
+- HTTP 监听失败时执行正常关停流程
 
 ## v0.3.1 变更
 

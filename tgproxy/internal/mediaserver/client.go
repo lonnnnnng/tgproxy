@@ -13,11 +13,11 @@ import (
 func Refresh(ctx context.Context, base, key string) error {
 	ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
 	defer cancel()
-	r, err := http.NewRequestWithContext(ctx, http.MethodPost, strings.TrimRight(base, "/")+"/Library/Refresh?api_key="+url.QueryEscape(key), nil)
+	r, err := http.NewRequestWithContext(ctx, http.MethodPost, strings.TrimRight(base, "/")+"/Library/Refresh", nil)
 	if err != nil {
 		return err
 	}
-	r.Header.Set("Authorization", `MediaBrowser Client="tgproxy", Device="Server", DeviceId="tgproxy", Version="1", Token="`+key+`"`)
+	r.Header.Set("X-Emby-Token", key)
 	// long: 拒绝跳转到其他主机，避免把媒体服务器密钥发送给重定向目标。
 	c := &http.Client{CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
 	resp, err := c.Do(r)
@@ -44,13 +44,13 @@ func request(ctx context.Context, method, base, key, path string, query url.Valu
 	defer cancel()
 	u := strings.TrimRight(base, "/") + path
 	if query != nil {
-		query.Set("api_key", key)
 		u += "?" + query.Encode()
 	}
 	r, err := http.NewRequestWithContext(ctx, method, u, nil)
 	if err != nil {
 		return nil, err
 	}
+	r.Header.Set("X-Emby-Token", key)
 	c := &http.Client{CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
 	return c.Do(r)
 }
@@ -199,12 +199,13 @@ func defaultLibraryOptions() map[string]any {
 func requestBody(ctx context.Context, method, base, key, path string, body []byte) (*http.Response, error) {
 	ctx, cancel := context.WithTimeout(ctx, 20*time.Second)
 	defer cancel()
-	u := strings.TrimRight(base, "/") + path + "?api_key=" + url.QueryEscape(key)
+	u := strings.TrimRight(base, "/") + path
 	r, err := http.NewRequestWithContext(ctx, method, u, strings.NewReader(string(body)))
 	if err != nil {
 		return nil, err
 	}
 	r.Header.Set("Content-Type", "application/json")
+	r.Header.Set("X-Emby-Token", key)
 	c := &http.Client{CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
 	return c.Do(r)
 }
