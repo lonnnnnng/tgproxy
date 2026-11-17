@@ -526,12 +526,33 @@ func (s *Server) handleDeleteChannel(w http.ResponseWriter, r *http.Request) {
 		result["warning"] = "频道已移除，但删除媒体库失败：" + err.Error()
 	}
 	if ch.Dir != "" {
-		if err := os.RemoveAll(filepath.Join(s.deps.MediaDir, ch.Dir)); err != nil {
+		if err := removeChannelMediaDir(s.deps.MediaDir, ch.Dir); err != nil {
 			s.logf("error", "删除频道媒体目录失败：%v", err)
 			result["warning"] = fmt.Sprintf("频道已移除，但删除媒体目录失败：%v", err)
 		}
 	}
 	writeJSON(w, result)
+}
+
+func removeChannelMediaDir(root, dir string) error {
+	if root == "" || filepath.IsAbs(dir) || dir == "." || dir == ".." || strings.HasPrefix(dir, ".."+string(filepath.Separator)) {
+		return fmt.Errorf("无效频道媒体目录")
+	}
+	rootAbs, err := filepath.Abs(root)
+	if err != nil {
+		return err
+	}
+	target := filepath.Join(rootAbs, filepath.Clean(dir))
+	rel, err := filepath.Rel(rootAbs, target)
+	if err != nil || rel == "." || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return fmt.Errorf("频道媒体目录越过媒体根目录")
+	}
+	if st, err := os.Lstat(target); err == nil && st.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("频道媒体目录不能是符号链接")
+	} else if err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	return os.RemoveAll(target)
 }
 
 func (s *Server) handleScan(w http.ResponseWriter, r *http.Request) {

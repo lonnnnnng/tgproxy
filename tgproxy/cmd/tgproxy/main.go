@@ -162,7 +162,8 @@ func main() {
 		logs.Add("info", "tgproxy 已启动 listen=%s strm_base=%s media=%s", *listen, base, *mediaDir)
 		log.Printf("tgproxy listening on %s (strm base %s, media %s)", *listen, base, *mediaDir)
 		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
-			log.Fatalf("http: %v", err)
+			log.Printf("http server failed: %v", err)
+			cancel()
 		}
 	}()
 
@@ -175,7 +176,10 @@ func main() {
 
 	sig := make(chan os.Signal, 1)
 	signal.Notify(sig, syscall.SIGINT, syscall.SIGTERM)
-	<-sig
+	select {
+	case <-sig:
+	case <-rootCtx.Done():
+	}
 	log.Println("shutting down")
 	cancel()
 	app.close()

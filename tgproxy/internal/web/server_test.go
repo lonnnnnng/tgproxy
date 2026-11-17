@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -13,6 +14,29 @@ import (
 	"tgproxy/internal/telegram"
 	"time"
 )
+
+func TestRemoveChannelMediaDirConstrainedToMediaRoot(t *testing.T) {
+	root := t.TempDir()
+	outside := t.TempDir()
+	if err := os.WriteFile(filepath.Join(outside, "keep"), []byte("keep"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	for _, dir := range []string{"../" + filepath.Base(outside), filepath.Join(string(filepath.Separator), "tmp", "outside"), "."} {
+		if err := removeChannelMediaDir(root, dir); err == nil {
+			t.Fatalf("accepted unsafe directory %q", dir)
+		}
+	}
+	link := filepath.Join(root, "linked")
+	if err := os.Symlink(outside, link); err != nil {
+		t.Fatal(err)
+	}
+	if err := removeChannelMediaDir(root, "linked"); err == nil {
+		t.Fatal("accepted symlink directory")
+	}
+	if _, err := os.Stat(filepath.Join(outside, "keep")); err != nil {
+		t.Fatalf("outside data was affected: %v", err)
+	}
+}
 
 func TestScanGuardsAndPartialFailure(t *testing.T) {
 	dir := t.TempDir()
