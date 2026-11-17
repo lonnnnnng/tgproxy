@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 )
 
 // Source resolves a file key to its chunk source + size + content type.
@@ -24,9 +25,15 @@ func (c *Cache) Handler(src Source) http.Handler {
 			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 			return
 		}
+		started := time.Now()
 		file := strings.TrimPrefix(strings.TrimPrefix(r.URL.Path, "/stream/"), "/")
 		// long: 下载文件名只作展示，同一消息的不同 URL 后缀必须共享缓存。
 		file, _, _ = strings.Cut(file, "/")
+		ua := r.UserAgent()
+		if len(ua) > 80 {
+			ua = ua[:80] + "…"
+		}
+		c.log("info", "收到播放请求 file=%s method=%s range=%q ip=%s ua=%q", file, r.Method, r.Header.Get("Range"), r.RemoteAddr, ua)
 		if file == "" {
 			http.Error(w, "missing file", 400)
 			return
@@ -40,14 +47,17 @@ func (c *Cache) Handler(src Source) http.Handler {
 			if errors.Is(err, context.DeadlineExceeded) {
 				code = http.StatusGatewayTimeout
 			}
+			c.log("error", "媒体解析失败 file=%s err=%v", file, err)
 			log.Printf("resolve stream %s: %v", file, err)
 			http.Error(w, "media source unavailable", code)
 			return
 		}
 		if size < 0 {
+			c.log("error", "媒体大小无效 file=%s", file)
 			http.Error(w, "invalid media size", 502)
 			return
 		}
+		c.log("info", "媒体解析完成 file=%s size=%d type=%s", file, size, ctype)
 		cacheKey := file
 		if source, ok := cs.(interface{ CacheKey() string }); ok {
 			cacheKey = file + ":" + source.CacheKey()
@@ -60,9 +70,13 @@ func (c *Cache) Handler(src Source) http.Handler {
 		}
 		start, end, partial, ok := parseRange(rangeHeader, size)
 		if !ok {
+			c.log("warn", "Range 无效 file=%s range=%q size=%d", file, rangeHeader, size)
 			w.Header().Set("Content-Range", fmt.Sprintf("bytes */%d", size))
 			http.Error(w, "range not satisfiable", http.StatusRequestedRangeNotSatisfiable)
 			return
+		}
+		if partial && start > 0 {
+			c.log("info", "seek file=%s start=%d end=%d size=%d", file, start, end, size)
 		}
 		// long: 有限 Range 只预取本次请求覆盖的块，探测文件头和尾部时不浪费后续下载带宽。
 		sub.ahead.limit = end + 1
@@ -81,6 +95,7 @@ func (c *Cache) Handler(src Source) http.Handler {
 				if invalidator, ok := src.(interface{ Invalidate(string) }); ok {
 					invalidator.Invalidate(file)
 				}
+				c.log("error", "读取首包失败 file=%s offset=%d err=%v", file, off, err)
 				log.Printf("read stream %s at %d: %v", file, off, err)
 				http.Error(w, "media download failed", code)
 				return
@@ -101,7 +116,9 @@ func (c *Cache) Handler(src Source) http.Handler {
 			return
 		}
 		if first > 0 {
+			c.log("success", "首包就绪 file=%s offset=%d bytes=%d elapsed=%s", file, start, first, time.Since(started).Round(time.Millisecond))
 			if _, err = w.Write(buf[:first]); err != nil {
+				c.log("warn", "客户端断开 file=%s offset=%d err=%v", file, start, err)
 				return
 			}
 			off += int64(first)
@@ -114,6 +131,7 @@ func (c *Cache) Handler(src Source) http.Handler {
 			nr, readErr := sub.ReadAt(r.Context(), off, buf[:min(int64(len(buf)), end-off+1)], size)
 			if nr > 0 {
 				if _, err = w.Write(buf[:nr]); err != nil {
+					c.log("warn", "客户端断开 file=%s offset=%d served=%d err=%v", file, off, off-start, err)
 					return
 				}
 				off += int64(nr)
@@ -125,11 +143,13 @@ func (c *Cache) Handler(src Source) http.Handler {
 				if invalidator, ok := src.(interface{ Invalidate(string) }); ok {
 					invalidator.Invalidate(file)
 				}
+				c.log("error", "流中断 file=%s offset=%d size=%d err=%v", file, off, size, readErr)
 				log.Printf("stream %s interrupted at %d/%d: %v", file, off, size, readErr)
 				// long: 已发送响应头后不能改状态，主动中断连接使客户端识别截断响应。
 				panic(http.ErrAbortHandler)
 			}
 		}
+		c.log("success", "播放请求完成 file=%s range=%q bytes=%d elapsed=%s", file, rangeHeader, off-start, time.Since(started).Round(time.Millisecond))
 	})
 }
 

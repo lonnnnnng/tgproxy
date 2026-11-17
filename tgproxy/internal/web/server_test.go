@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"tgproxy/internal/logbus"
 	"tgproxy/internal/store"
 	"tgproxy/internal/telegram"
 	"time"
@@ -182,5 +183,32 @@ func TestMediaServerConfigAPI(t *testing.T) {
 	}
 	if got["url"] != "http://emby.local:8096" || got["configured"] != true {
 		t.Fatalf("get result=%v", got)
+	}
+}
+
+func TestLogsAPI(t *testing.T) {
+	lib, _ := store.Open(t.TempDir())
+	logs := logbus.New(10)
+	logs.Add("info", "hello %s", "world")
+	s := NewServer(Deps{Store: lib, Logs: logs})
+	w := httptest.NewRecorder()
+	s.Handler().ServeHTTP(w, httptest.NewRequest("GET", "/api/logs?after=0", nil))
+	var got struct {
+		Entries []logbus.Entry `json:"entries"`
+		Next    int64          `json:"next"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &got); err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Entries) != 1 || got.Entries[0].Message != "hello world" || got.Next != 1 {
+		t.Fatalf("logs=%+v", got)
+	}
+	w = httptest.NewRecorder()
+	s.Handler().ServeHTTP(w, httptest.NewRequest("GET", "/api/logs?after=1", nil))
+	if err := json.Unmarshal(w.Body.Bytes(), &got); err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Entries) != 0 || got.Next != 1 {
+		t.Fatalf("after logs=%+v", got)
 	}
 }

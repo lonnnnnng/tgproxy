@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"tgproxy/internal/config"
+	"tgproxy/internal/logbus"
 	"tgproxy/internal/store"
 	"tgproxy/internal/stream"
 	"tgproxy/internal/telegram"
@@ -69,6 +70,8 @@ func main() {
 	}
 
 	cache := stream.NewCache(nil, cfg.ChunkSize, cfg.CacheMaxBytes, cfg.PrefetchChunks)
+	logs := logbus.New(1000)
+	cache.SetLogf(logs.Logf)
 
 	rootCtx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -125,6 +128,7 @@ func main() {
 		Context:         rootCtx,
 		MediaServer:     app.mediaServer,
 		SaveMediaServer: app.saveMediaServer,
+		Logs:            logs,
 		StrmBase:        base,
 		MediaDir:        *mediaDir,
 		SendCode:        app.sendCode,
@@ -136,6 +140,7 @@ func main() {
 
 	srv := &http.Server{Addr: *listen, Handler: mux, ReadHeaderTimeout: 10 * time.Second, ReadTimeout: 30 * time.Second, IdleTimeout: 90 * time.Second, MaxHeaderBytes: 32 << 10}
 	go func() {
+		logs.Add("info", "tgproxy 已启动 listen=%s strm_base=%s media=%s", *listen, base, *mediaDir)
 		log.Printf("tgproxy listening on %s (strm base %s, media %s)", *listen, base, *mediaDir)
 		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			log.Fatalf("http: %v", err)

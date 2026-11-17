@@ -65,9 +65,9 @@
     </section>
 
     <section id="view-logs" class="view" aria-label="运行日志" hidden>
-      <section class="panel"><div class="panel-heading"><h2>本次扫描记录 <span id="log-count" class="count-chip">0</span></h2><div class="actions"><button id="copy-logs" class="button secondary small"><span data-icon="copy"></span>复制</button><button id="download-logs" class="button secondary small"><span data-icon="download"></span>下载</button></div></div><div class="table-toolbar"><div class="search-input"><span data-icon="search"></span><input id="log-search" type="search" aria-label="搜索日志" placeholder="搜索日志内容"></div><label class="filter-label"><span class="sr-only">日志级别</span><select id="log-filter"><option value="all">全部记录</option><option value="error">仅错误</option><option value="success">仅完成</option></select></label></div><div id="log-list" class="log-list"></div><div class="panel-footer"><span id="log-result"></span><span>自动刷新 · 在记录区域滚动查看更多</span></div></section>
+      <section class="panel"><div class="panel-heading"><h2>实时运行日志 <span id="log-count" class="count-chip">0</span></h2><div class="actions"><button id="copy-logs" class="button secondary small"><span data-icon="copy"></span>复制</button><button id="download-logs" class="button secondary small"><span data-icon="download"></span>下载</button></div></div><div class="table-toolbar"><div class="search-input"><span data-icon="search"></span><input id="log-search" type="search" aria-label="搜索日志" placeholder="搜索日志内容"></div><label class="filter-label"><span class="sr-only">日志级别</span><select id="log-filter"><option value="all">全部记录</option><option value="error">仅错误</option><option value="warning">仅警告</option><option value="success">仅成功</option><option value="info">仅信息</option></select></label></div><div id="log-list" class="log-list"></div><div class="panel-footer"><span id="log-result"></span><span>自动刷新 · 在记录区域滚动查看更多</span></div></section>
       <section id="last-error-panel" class="panel error-panel" hidden><h2>最近一次错误</h2><pre id="last-error"></pre></section>
-      <p class="section-note"><span data-icon="info"></span>仅保留本进程最近一次扫描的最后 200 条记录；新扫描或服务重启后会清空。手动重建的错误单独显示。</p>
+      <p class="section-note"><span data-icon="info"></span>内存保留最近 1000 条；扫描、媒体刷新、播放请求、seek 与首包加载会实时写入。服务重启后清空。</p>
     </section>
 
     <section id="view-connections" class="view" aria-label="连接设置" hidden>

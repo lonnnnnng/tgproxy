@@ -49,6 +49,7 @@ type Cache struct {
 	cancel                     context.CancelFunc
 	fetchTimeout               time.Duration
 	Hits, Misses, BytesRead    atomic.Int64
+	logf                       func(level, format string, args ...any)
 }
 
 func NewCache(src ChunkSource, chunkSize, maxBytes int64, prefetch int) *Cache {
@@ -72,6 +73,15 @@ func NewCache(src ChunkSource, chunkSize, maxBytes int64, prefetch int) *Cache {
 		demandSlots: make(chan struct{}, 8), prefetchSlots: make(chan struct{}, min(prefetch, maxPrefetchConcurrent)), ctx: ctx, cancel: cancel, fetchTimeout: 30 * time.Second}
 }
 func (c *Cache) Close() { c.cancel() }
+
+// SetLogf installs the console log sink. It is safe to leave nil.
+func (c *Cache) SetLogf(fn func(level, format string, args ...any)) { c.logf = fn }
+
+func (c *Cache) log(level, format string, args ...any) {
+	if c.logf != nil {
+		c.logf(level, format, args...)
+	}
+}
 
 func (c *Cache) evictLocked() {
 	for c.size > c.maxBytes && c.order.Len() > 0 {

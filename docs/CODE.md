@@ -16,14 +16,15 @@ Go module：`tgproxy/`。gotd/td v0.163.0 与 tdl core 均通过 `go.mod` 固定
 | `internal/stream/cache.go` | 有界 LRU/singleflight、需求与预取分离、取消、超时、失败重试 |
 | `internal/stream/prefetch.go` | 按播放请求管理预取窗口、共享引用与取消、有限 Range 边界及小缓存限制 |
 | `internal/stream/source.go` | 有界 TTL 句柄缓存，解析合并与独立等待者取消 |
-| `internal/stream/handler.go` | HTTP 单 Range/HEAD、首块失败 502/504、中途断流的可识别终止 |
+| `internal/stream/handler.go` | HTTP 单 Range/HEAD、首块失败 502/504、中途断流的可识别终止；播放/seek/首包/完成日志 |
 | `internal/media/tree.go` | 预编译的集号/剧名规则、跨频道归类、来源保留和确定性排序 |
 | `internal/media/sync.go` | 输出规划、所有权清单、原子文件替换、旧输出备份与失败恢复 |
 | `internal/store/store.go` | 频道/视频索引、版本号、消息查找索引、先持久化再提交内存 |
 | `internal/persist/json.go` | 私有临时文件 + sync + 同目录 rename 的原子 JSON 保存 |
 | `internal/config/config.go` | 默认值、环境覆盖、数值和 URL 校验、配置保存 |
 | `internal/mediaserver/client.go` | 重建后通知 Emby 刷新；拒绝携带密钥重定向 |
-| `internal/web/server.go` | 同源管理 API、任务互斥、扫描自动重建、错误与进度状态 |
+| `internal/logbus/logbus.go` | 有界内存日志环；`/api/logs` 增量读取，供控制台实时展示 |
+| `internal/web/server.go` | 同源管理 API、任务互斥、扫描自动重建、错误与进度状态、日志增量接口 |
 | `internal/web/static/` | 中文控制台、串行轮询、忙碌状态与错误展示 |
 
 ## 状态链路

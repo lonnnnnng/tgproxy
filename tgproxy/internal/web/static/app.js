@@ -37,7 +37,7 @@ const views = {
   logs: ['运行日志', '查看扫描记录，快速定位需要处理的问题。'],
   connections: ['连接设置', '管理 Telegram 授权和 Emby 刷新通知。']
 };
-const state = { status: null, channels: [], online: false, pending: '', refresh: null, view: 'overview', codeSent: false, passwordNeeded: false, loginExpanded: false, deleting: null, signatures: {}, toastTimer: null };
+const state = { status: null, channels: [], online: false, pending: '', refresh: null, view: 'overview', codeSent: false, passwordNeeded: false, loginExpanded: false, deleting: null, logs: [], logCursor: 0, logBusy: false, signatures: {}, toastTimer: null };
 const number = value => new Intl.NumberFormat('zh-CN').format(Number(value) || 0);
 const text = (id, value) => { $(id).textContent = value; };
 const taskBusy = () => !!(state.status?.scanning || state.status?.rebuilding || state.status?.media_server_state === 'notifying');
@@ -84,6 +84,7 @@ function route(focus = false) {
   $('sync-actions').hidden = state.view !== 'overview'; $('show-add').hidden = state.view !== 'channels';
   if (focus) { $('page-title').focus({ preventScroll: true }); window.scrollTo(0, 0); }
   if (state.status) render();
+  if (state.view === 'logs') refreshLogs();
 }
 function applyTheme(theme) {
   const dark = theme === 'dark'; document.documentElement.dataset.theme = dark ? 'dark' : 'light';
@@ -204,20 +205,51 @@ function renderChannels() {
   renderTable('channel-list', channels, true); text('filter-result', `显示 ${number(channels.length)} / ${number(state.channels.length)} 个频道`);
   $('channel-lock').hidden = !taskBusy();
 }
-function logLevel(line) { return /^ERROR\b|失败|错误/.test(line) ? 'error' : /^OK\b/.test(line) ? 'success' : 'neutral'; }
-function exportText() { return [...(state.status?.scan_log || []), ...(state.status?.last_error ? ['\n最近一次错误：', state.status.last_error] : [])].join('\n'); }
+function logLevel(entry) { return ({ error: 'error', warn: 'warning', success: 'success', info: 'info' })[entry?.level] || 'info'; }
+function exportText() { return [...state.logs.map(e => `${e.time} [${e.level}] ${e.message}`), ...(state.status?.last_error ? ['\n最近一次错误：', state.status.last_error] : [])].join('\n'); }
+async function refreshLogs() {
+  if (state.logBusy) return;
+  state.logBusy = true;
+  try {
+    const data = await api(`/api/logs?after=${state.logCursor}`);
+    const next = Number(data.next) || 0;
+    if (next < state.logCursor) { state.logs = []; state.logCursor = 0; return; }
+    const entries = Array.isArray(data.entries) ? data.entries : [];
+    if (entries.length) {
+      state.logs = state.logs.concat(entries).slice(-1000);
+      state.logCursor = next || state.logCursor;
+      if (state.view === 'logs') renderLogs();
+    } else if (data.next && Number(data.next) > state.logCursor) {
+      state.logCursor = Number(data.next);
+    }
+  } catch { /* long: 日志轮询失败不影响主状态轮询。 */ }
+  finally { state.logBusy = false; }
+}
 function renderLogs() {
-  const lines = state.status.scan_log || []; const query = $('log-search').value.toLocaleLowerCase(); const filter = $('log-filter').value;
-  const visible = lines.map((line, i) => ({ line, i, level: logLevel(line) })).filter(item => item.line.toLocaleLowerCase().includes(query) && (filter === 'all' || item.level === filter));
-  text('log-count', number(lines.length)); text('log-result', `显示 ${visible.length} / ${lines.length} 条记录`);
-  const key = JSON.stringify(visible);
+  const entries = state.logs;
+  const query = $('log-search').value.toLocaleLowerCase();
+  const filter = $('log-filter').value;
+  const visible = entries.filter(e => e.message.toLocaleLowerCase().includes(query) && (filter === 'all' || logLevel(e) === filter));
+  text('log-count', number(entries.length));
+  text('log-result', `显示 ${visible.length} / ${entries.length} 条记录`);
+  const key = JSON.stringify(visible.map(e => e.seq));
   if (state.signatures.logs !== key) {
     state.signatures.logs = key;
-    if (!visible.length) empty($('log-list'), lines.length ? '没有匹配的记录' : '暂时没有扫描记录', lines.length ? '尝试修改关键词或日志级别。' : '扫描开始后，这里会显示频道进度与处理结果。');
+    const list = $('log-list');
+    const nearBottom = list.scrollHeight - list.scrollTop - list.clientHeight < 40;
+    if (!visible.length) empty(list, entries.length ? '没有匹配的记录' : '暂无运行日志', entries.length ? '尝试修改关键词或日志级别。' : '播放、seek、媒体刷新和扫描事件会实时显示在这里。');
     else {
       const fragment = document.createDocumentFragment();
-      visible.forEach(({ line, i, level }) => { const row = element('div', 'log-row'); row.append(element('span', 'log-index', String(i + 1).padStart(2, '0')), badge(({error:'错误', success:'完成', neutral:'信息'})[level], level), element('p', '', line)); fragment.append(row); });
-      $('log-list').replaceChildren(fragment);
+      visible.forEach(entry => {
+        const row = element('div', 'log-row');
+        const time = new Date(entry.time);
+        const hhmmss = Number.isNaN(time.getTime()) ? '--:--:--' : time.toLocaleTimeString('zh-CN', { hour12: false });
+        const level = logLevel(entry);
+        row.append(element('span', 'log-index', hhmmss), badge(({ error: '错误', warning: '警告', success: '成功', info: '信息' })[level], level), element('p', '', entry.message));
+        fragment.append(row);
+      });
+      list.replaceChildren(fragment);
+      if (nearBottom) list.scrollTop = list.scrollHeight;
     }
   }
   $('last-error-panel').hidden = !state.status.last_error; text('last-error', state.status.last_error || '');
@@ -351,7 +383,7 @@ $('copy-logs').addEventListener('click', async () => {
 });
 $('download-logs').addEventListener('click', () => {
   const url = URL.createObjectURL(new Blob([exportText()], { type: 'text/plain;charset=utf-8' }));
-  const a = element('a'); a.href = url; a.download = `tgproxy-scan-${new Date().toISOString().slice(0, 10)}.log`; a.click(); setTimeout(() => URL.revokeObjectURL(url), 1000);
+  const a = element('a'); a.href = url; a.download = `tgproxy-logs-${new Date().toISOString().slice(0, 10)}.log`; a.click(); setTimeout(() => URL.revokeObjectURL(url), 1000);
 });
 $('relogin').addEventListener('click', () => { state.loginExpanded = true; renderConnections(); $('phone').focus(); });
 $('cancel-login').addEventListener('click', () => { state.loginExpanded = false; renderConnections(); });
@@ -400,4 +432,5 @@ document.addEventListener('visibilitychange', () => { if (!document.hidden) refr
 applyTheme(document.documentElement.dataset.theme); route();
 // long: 轮询完成后再安排下一次，隐藏标签页减频；任何页面共用一个请求，不因切换导航累积定时器。
 async function poll() { await refresh(); setTimeout(poll, document.hidden ? 15000 : 3000); }
+setInterval(() => { if (state.view === 'logs' && !document.hidden) refreshLogs(); }, 1500);
 poll();

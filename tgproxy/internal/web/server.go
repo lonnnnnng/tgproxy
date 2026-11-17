@@ -8,10 +8,12 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
 
+	"tgproxy/internal/logbus"
 	"tgproxy/internal/media"
 	"tgproxy/internal/mediaserver"
 	"tgproxy/internal/store"
@@ -32,10 +34,12 @@ type Deps struct {
 	SaveMediaServer func(url, key string) error
 	// TestMediaServer is an optional test hook for refresh notifications.
 	TestMediaServer func(context.Context, string, string) error
-	Store           *store.Library
-	TGFn            func() *telegram.Client // current client (nil until credentials set)
-	StrmBase        string                  // e.g. http://192.168.1.2:8080
-	MediaDir        string
+	// Logs is the shared in-memory log buffer for the console.
+	Logs     *logbus.Bus
+	Store    *store.Library
+	TGFn     func() *telegram.Client // current client (nil until credentials set)
+	StrmBase string                  // e.g. http://192.168.1.2:8080
+	MediaDir string
 
 	// SendCode sends the login verification code for the phone.
 	SendCode func(ctx context.Context, phone string) error
@@ -62,7 +66,6 @@ type Server struct {
 	rebuilding      bool
 	mu              sync.Mutex
 	scanning        bool
-	scanLog         []string
 	lastErr         string
 	activeChannelID int64
 	scanProgress    map[int64]channelScanProgress
@@ -101,6 +104,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("DELETE /api/channels/{ref}", s.handleDeleteChannel)
 	s.mux.HandleFunc("POST /api/scan", s.handleScan)
 	s.mux.HandleFunc("POST /api/rebuild", s.handleRebuild)
+	s.mux.HandleFunc("GET /api/logs", s.handleLogs)
 	s.mux.HandleFunc("GET /api/media-server", s.handleGetMediaServer)
 	s.mux.HandleFunc("POST /api/media-server", s.handleSaveMediaServer)
 }
@@ -311,7 +315,6 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 	}
 	s.mu.Lock()
 	scanning, rebuilding, lastErr := s.scanning, s.rebuilding, s.lastErr
-	log := append([]string(nil), s.scanLog...)
 	scanProgress := make(map[int64]channelScanProgress, len(s.scanProgress))
 	for id, progress := range s.scanProgress {
 		scanProgress[id] = progress
@@ -335,7 +338,7 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, map[string]any{
 		"has_credentials": hasCreds, "authorized": s.connected(), "scanning": scanning, "rebuilding": rebuilding,
-		"scan_log": log, "last_error": lastErr, "channels": len(s.deps.Store.ListChannels()), "items": len(items), "videos": videos,
+		"last_error": lastErr, "channels": len(s.deps.Store.ListChannels()), "items": len(items), "videos": videos,
 		"needs_rebuild": !hasTree || built != rev, "active_channel_id": activeChannelID, "scan_progress": scanProgress,
 		"channel_video_counts": channelVideoCounts, "media_server_configured": mediaConfigured, "media_server_state": mediaState,
 		"media_server_message": mediaMessage, "media_server_updated_at": mediaUpdated, "media_server_url": mediaURL, "strm_files": strmFiles, "strm_files_known": strmFilesKnown,
@@ -412,7 +415,7 @@ func (s *Server) handleScan(w http.ResponseWriter, r *http.Request) {
 	}
 	s.mu.Lock()
 	s.scanning = true
-	s.scanLog = nil
+	s.lastErr = ""
 	s.lastErr = ""
 	s.activeChannelID = 0
 	s.scanProgress = make(map[int64]channelScanProgress, len(channels))
@@ -427,13 +430,10 @@ func (s *Server) handleScan(w http.ResponseWriter, r *http.Request) {
 	}()
 	writeJSON(w, map[string]any{"ok": true, "started": true})
 }
-func (s *Server) logf(format string, args ...any) {
-	s.mu.Lock()
-	s.scanLog = append(s.scanLog, fmt.Sprintf(format, args...))
-	if len(s.scanLog) > 200 {
-		s.scanLog = append([]string(nil), s.scanLog[len(s.scanLog)-200:]...)
+func (s *Server) logf(level, format string, args ...any) {
+	if s.deps.Logs != nil {
+		s.deps.Logs.Add(level, format, args...)
 	}
-	s.mu.Unlock()
 }
 
 func (s *Server) updateChannelProgress(id int64, status string, videosFound int, errMsg string) {
@@ -461,7 +461,7 @@ func (s *Server) scanAll() {
 			}
 			return c.ScanChannelProgress(ctx, ch, limit, func(n int) {
 				s.updateChannelProgress(ch, "scanning", n, "")
-				s.logf("扫描进度：频道 %d 已发现 %d 个视频", ch, n)
+				s.logf("info", "扫描进度：频道 %d 已发现 %d 个视频", ch, n)
 			})
 		}
 	}
@@ -471,7 +471,7 @@ func (s *Server) scanAll() {
 			break
 		}
 		s.updateChannelProgress(ch.ID, "scanning", 0, "")
-		s.logf("正在扫描 %s 的视频历史…", ch.Title)
+		s.logf("info", "正在扫描 %s 的视频历史…", ch.Title)
 		ctx, cancel := context.WithTimeout(s.deps.Context, 30*time.Minute)
 		items, err := scan(ctx, ch.ID, 0)
 		cancel()
@@ -490,19 +490,19 @@ func (s *Server) scanAll() {
 			msg := fmt.Sprintf("扫描 %s 失败: %v（保留原索引）", ch.Title, err)
 			failures = append(failures, msg)
 			s.updateChannelProgress(ch.ID, "failed", 0, err.Error())
-			s.logf("ERROR %s", msg)
+			s.logf("error", "扫描失败：%s", msg)
 			continue
 		}
 		s.updateChannelProgress(ch.ID, "completed", found, "")
-		s.logf("OK %s: %d 个视频", ch.Title, len(items))
+		s.logf("success", "%s 扫描完成：%d 个视频", ch.Title, len(items))
 	}
 	if s.deps.Context.Err() == nil {
 		result, err := s.rebuild(s.deps.Context)
 		if err != nil {
 			failures = append(failures, "生成媒体树失败: "+err.Error())
-			s.logf("ERROR 重建: %v", err)
+			s.logf("error", "重建失败：%v", err)
 		} else {
-			s.logf("OK 已自动生成 %v 个视频入口；%v", result["strm_files"], result["media_server_message"])
+			s.logf("success", "媒体树已生成：%v 个入口；%v", result["strm_files"], result["media_server_message"])
 			if warning, _ := result["warning"].(string); warning != "" {
 				failures = append(failures, warning)
 			}
@@ -582,10 +582,29 @@ func (s *Server) notifyMediaServer(ctx context.Context) error {
 	if url == "" || key == "" {
 		return errors.New("媒体服务器未配置")
 	}
+	s.logf("info", "通知媒体服务器刷新：%s", url)
+	var err error
 	if s.deps.TestMediaServer != nil {
-		return s.deps.TestMediaServer(ctx, url, key)
+		err = s.deps.TestMediaServer(ctx, url, key)
+	} else {
+		err = mediaserver.Refresh(ctx, url, key)
 	}
-	return mediaserver.Refresh(ctx, url, key)
+	if err != nil {
+		s.logf("error", "媒体服务器刷新失败：%v", err)
+	} else {
+		s.logf("success", "媒体服务器已接收刷新请求")
+	}
+	return err
+}
+
+func (s *Server) handleLogs(w http.ResponseWriter, r *http.Request) {
+	after, _ := strconv.ParseInt(r.URL.Query().Get("after"), 10, 64)
+	if s.deps.Logs == nil {
+		writeJSON(w, map[string]any{"entries": []any{}, "next": after})
+		return
+	}
+	entries, next := s.deps.Logs.Since(after)
+	writeJSON(w, map[string]any{"entries": entries, "next": next})
 }
 
 func (s *Server) handleGetMediaServer(w http.ResponseWriter, r *http.Request) {
