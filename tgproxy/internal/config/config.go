@@ -21,16 +21,16 @@ type Config struct {
 	Session []byte `json:"session,omitempty"`
 	// Listen address for web UI + stream server
 	Listen string `json:"listen"`
-	// Media tree root directory (contains .strm files for Jellyfin)
+	// Media tree root directory (contains .strm files for Emby)
 	MediaRoot string `json:"media_root"`
 	// Stream URL base used inside .strm files. Empty = derive from request host.
 	StrmBase string `json:"strm_base,omitempty"`
 	// Cache settings
-	CacheMaxBytes  int64  `json:"cache_max_bytes"` // LRU chunk cache size
-	ChunkSize      int64  `json:"chunk_size"`      // fetch chunk size, must be 4096-aligned multiple
-	PrefetchChunks int    `json:"prefetch_chunks"` // sequential prefetch count
-	JellyfinURL    string `json:"jellyfin_url,omitempty"`
-	JellyfinAPIKey string `json:"jellyfin_api_key,omitempty"`
+	CacheMaxBytes     int64  `json:"cache_max_bytes"` // LRU chunk cache size
+	ChunkSize         int64  `json:"chunk_size"`      // fetch chunk size, must be 4096-aligned multiple
+	PrefetchChunks    int    `json:"prefetch_chunks"` // sequential prefetch count
+	MediaServerURL    string `json:"media_server_url,omitempty"`
+	MediaServerAPIKey string `json:"media_server_api_key,omitempty"`
 }
 
 func Defaults() *Config {
@@ -101,7 +101,7 @@ func (c *Config) Validate() error {
 	if _, _, err := net.SplitHostPort(c.Listen); err != nil {
 		return fmt.Errorf("listen 地址无效: %w", err)
 	}
-	for _, raw := range []string{c.StrmBase, c.JellyfinURL} {
+	for _, raw := range []string{c.StrmBase, c.MediaServerURL} {
 		if raw == "" {
 			continue
 		}
@@ -110,8 +110,8 @@ func (c *Config) Validate() error {
 			return fmt.Errorf("服务地址必须为不含凭据、查询参数的 HTTP(S) URL")
 		}
 	}
-	if (c.JellyfinURL == "") != (c.JellyfinAPIKey == "") {
-		return fmt.Errorf("jellyfin_url 和 jellyfin_api_key 必须同时配置")
+	if (c.MediaServerURL == "") != (c.MediaServerAPIKey == "") {
+		return fmt.Errorf("media_server_url 和 media_server_api_key 必须同时配置")
 	}
 	return nil
 }

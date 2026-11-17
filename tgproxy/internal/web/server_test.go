@@ -76,12 +76,12 @@ func TestScanGuardsAndPartialFailure(t *testing.T) {
 	if progress["1"].(map[string]any)["status"] != "completed" || progress["2"].(map[string]any)["status"] != "failed" {
 		t.Fatalf("scan progress=%v", progress)
 	}
-	if status["jellyfin_state"] != "not_configured" || status["jellyfin_configured"] != false || status["strm_files_known"] != true {
+	if status["media_server_state"] != "not_configured" || status["media_server_configured"] != false || status["strm_files_known"] != true {
 		t.Fatalf("sync state=%v", status)
 	}
 }
 
-func TestRebuildSeparatesMediaTreeFromJellyfinNotification(t *testing.T) {
+func TestRebuildSeparatesMediaTreeFromMediaServerNotification(t *testing.T) {
 	dir := t.TempDir()
 	lib, err := store.Open(dir)
 	if err != nil {
@@ -95,17 +95,18 @@ func TestRebuildSeparatesMediaTreeFromJellyfinNotification(t *testing.T) {
 	}
 	var s *Server
 	s = NewServer(Deps{
-		Store:    lib,
-		MediaDir: filepath.Join(dir, "media"),
-		StrmBase: "http://host",
-		NotifyJellyfin: func(context.Context) error {
+		Store:       lib,
+		MediaDir:    filepath.Join(dir, "media"),
+		StrmBase:    "http://host",
+		MediaServer: func() (string, string) { return "http://emby", "key" },
+		TestMediaServer: func(context.Context, string, string) error {
 			w := httptest.NewRecorder()
 			s.Handler().ServeHTTP(w, httptest.NewRequest("GET", "/api/status", nil))
 			var status map[string]any
 			if err := json.Unmarshal(w.Body.Bytes(), &status); err != nil {
 				t.Fatal(err)
 			}
-			if status["rebuilding"] != false || status["jellyfin_state"] != "notifying" {
+			if status["rebuilding"] != false || status["media_server_state"] != "notifying" {
 				t.Fatalf("notification phase=%v", status)
 			}
 			return errors.New("offline")
@@ -129,7 +130,7 @@ func TestRebuildSeparatesMediaTreeFromJellyfinNotification(t *testing.T) {
 	if err := json.Unmarshal(w.Body.Bytes(), &status); err != nil {
 		t.Fatal(err)
 	}
-	if status["jellyfin_state"] != "failed" || status["jellyfin_updated_at"] == "" || status["needs_rebuild"] != false {
+	if status["media_server_state"] != "failed" || status["media_server_updated_at"] == "" || status["needs_rebuild"] != false {
 		t.Fatalf("final sync state=%v", status)
 	}
 }
@@ -143,5 +144,43 @@ func TestCrossSiteMutationRejected(t *testing.T) {
 	s.Handler().ServeHTTP(w, r)
 	if w.Code != 403 {
 		t.Fatal(w.Code)
+	}
+}
+
+func TestMediaServerConfigAPI(t *testing.T) {
+	lib, _ := store.Open(t.TempDir())
+	var savedURL, savedKey string
+	s := NewServer(Deps{
+		Store: lib,
+		MediaServer: func() (string, string) {
+			return savedURL, savedKey
+		},
+		SaveMediaServer: func(url, key string) error {
+			savedURL, savedKey = url, key
+			return nil
+		},
+		TestMediaServer: func(context.Context, string, string) error { return nil },
+	})
+	body := strings.NewReader(`{"url":"http://emby.local:8096","api_key":"secret"}`)
+	w := httptest.NewRecorder()
+	s.Handler().ServeHTTP(w, httptest.NewRequest("POST", "/api/media-server", body))
+	if w.Code != 200 {
+		t.Fatalf("save status=%d body=%s", w.Code, w.Body.String())
+	}
+	var result map[string]any
+	if err := json.Unmarshal(w.Body.Bytes(), &result); err != nil {
+		t.Fatal(err)
+	}
+	if result["configured"] != true || result["tested"] != true {
+		t.Fatalf("save result=%v", result)
+	}
+	w = httptest.NewRecorder()
+	s.Handler().ServeHTTP(w, httptest.NewRequest("GET", "/api/media-server", nil))
+	var got map[string]any
+	if err := json.Unmarshal(w.Body.Bytes(), &got); err != nil {
+		t.Fatal(err)
+	}
+	if got["url"] != "http://emby.local:8096" || got["configured"] != true {
+		t.Fatalf("get result=%v", got)
 	}
 }

@@ -18,7 +18,6 @@ import (
 	"time"
 
 	"tgproxy/internal/config"
-	"tgproxy/internal/jellyfin"
 	"tgproxy/internal/store"
 	"tgproxy/internal/stream"
 	"tgproxy/internal/telegram"
@@ -118,18 +117,14 @@ func main() {
 		}
 		return resolved.Resolve(ctx, fmt.Sprintf("%d_%d", ch, msg))
 	}}
-	var notify func(context.Context) error
-	if cfg.JellyfinURL != "" {
-		notify = func(ctx context.Context) error { return jellyfin.Refresh(ctx, cfg.JellyfinURL, cfg.JellyfinAPIKey) }
-	}
-
 	mux := http.NewServeMux()
 	mux.Handle("/stream/", http.StripPrefix("/stream/", cache.Handler(src)))
 	mux.Handle("/", web.NewServer(web.Deps{
 		Store:           lib,
 		TGFn:            app.currentTG,
 		Context:         rootCtx,
-		NotifyJellyfin:  notify,
+		MediaServer:     app.mediaServer,
+		SaveMediaServer: app.saveMediaServer,
 		StrmBase:        base,
 		MediaDir:        *mediaDir,
 		SendCode:        app.sendCode,

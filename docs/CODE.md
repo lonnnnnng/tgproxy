@@ -22,13 +22,13 @@ Go module：`tgproxy/`。gotd/td v0.163.0 与 tdl core 均通过 `go.mod` 固定
 | `internal/store/store.go` | 频道/视频索引、版本号、消息查找索引、先持久化再提交内存 |
 | `internal/persist/json.go` | 私有临时文件 + sync + 同目录 rename 的原子 JSON 保存 |
 | `internal/config/config.go` | 默认值、环境覆盖、数值和 URL 校验、配置保存 |
-| `internal/jellyfin/client.go` | 重建后通知 Jellyfin 刷新；拒绝携带密钥重定向 |
+| `internal/mediaserver/client.go` | 重建后通知 Emby 刷新；拒绝携带密钥重定向 |
 | `internal/web/server.go` | 同源管理 API、任务互斥、扫描自动重建、错误与进度状态 |
 | `internal/web/static/` | 中文控制台、串行轮询、忙碌状态与错误展示 |
 
 ## 状态链路
 
-添加频道只保存频道；扫描按频道完整分页，成功后替换该频道索引，失败保留旧索引并记录错误。扫描结束自动用当前索引生成媒体树，再通知 Jellyfin。删除频道同步移除索引，重建时移出已登记的过期输出。
+添加频道只保存频道；扫描按频道完整分页，成功后替换该频道索引，失败保留旧索引并记录错误。扫描结束自动用当前索引生成媒体树，再通知 Emby。删除频道同步移除索引，重建时移出已登记的过期输出。
 
 媒体树以 `.tgproxy-manifest.json` 记录文件内容哈希和索引版本；不更换根目录 inode，不覆盖用户改过的文件。历史无清单的树只迁移符合本项目流地址格式的输出。旧文件进入同级 `media.backups/`，不递归清空整个媒体目录。
 

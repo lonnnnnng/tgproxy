@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"tgproxy/internal/media"
+	"tgproxy/internal/mediaserver"
 	"tgproxy/internal/store"
 	"tgproxy/internal/telegram"
 )
@@ -22,14 +23,19 @@ var staticFS embed.FS
 
 // Deps are the services the web UI needs.
 type Deps struct {
-	Context        context.Context
-	ScanChannel    func(context.Context, int64, int) ([]telegram.MediaItem, error)
-	Connected      func() bool
-	NotifyJellyfin func(context.Context) error
-	Store          *store.Library
-	TGFn           func() *telegram.Client // current client (nil until credentials set)
-	StrmBase       string                  // e.g. http://192.168.1.2:8080
-	MediaDir       string
+	Context     context.Context
+	ScanChannel func(context.Context, int64, int) ([]telegram.MediaItem, error)
+	Connected   func() bool
+	// MediaServer returns the current Emby base URL and API key.
+	MediaServer func() (string, string)
+	// SaveMediaServer persists the Emby base URL and API key.
+	SaveMediaServer func(url, key string) error
+	// TestMediaServer is an optional test hook for refresh notifications.
+	TestMediaServer func(context.Context, string, string) error
+	Store           *store.Library
+	TGFn            func() *telegram.Client // current client (nil until credentials set)
+	StrmBase        string                  // e.g. http://192.168.1.2:8080
+	MediaDir        string
 
 	// SendCode sends the login verification code for the phone.
 	SendCode func(ctx context.Context, phone string) error
@@ -60,9 +66,9 @@ type Server struct {
 	lastErr         string
 	activeChannelID int64
 	scanProgress    map[int64]channelScanProgress
-	jellyfinState   string
-	jellyfinMessage string
-	jellyfinUpdated string
+	mediaState      string
+	mediaMessage    string
+	mediaUpdated    string
 	strmFiles       int
 	strmFilesKnown  bool
 }
@@ -95,6 +101,8 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("DELETE /api/channels/{ref}", s.handleDeleteChannel)
 	s.mux.HandleFunc("POST /api/scan", s.handleScan)
 	s.mux.HandleFunc("POST /api/rebuild", s.handleRebuild)
+	s.mux.HandleFunc("GET /api/media-server", s.handleGetMediaServer)
+	s.mux.HandleFunc("POST /api/media-server", s.handleSaveMediaServer)
 }
 
 func (s *Server) Handler() http.Handler {
@@ -309,27 +317,28 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 		scanProgress[id] = progress
 	}
 	activeChannelID := s.activeChannelID
-	jellyfinState, jellyfinMessage, jellyfinUpdated := s.jellyfinState, s.jellyfinMessage, s.jellyfinUpdated
+	mediaState, mediaMessage, mediaUpdated := s.mediaState, s.mediaMessage, s.mediaUpdated
 	strmFiles := s.strmFiles
 	strmFilesKnown := s.strmFilesKnown
 	s.mu.Unlock()
 	hasCreds := s.deps.HasCredentials == nil || s.deps.HasCredentials()
-	jellyfinConfigured := s.deps.NotifyJellyfin != nil
-	if !jellyfinConfigured {
-		jellyfinState = "not_configured"
-		if jellyfinMessage == "" {
-			jellyfinMessage = "自动通知未配置；媒体树生成后，请在 Jellyfin 中手动刷新媒体库。"
+	mediaURL, mediaKey := s.mediaServerConfig()
+	mediaConfigured := mediaURL != "" && mediaKey != ""
+	if !mediaConfigured {
+		mediaState = "not_configured"
+		if mediaMessage == "" {
+			mediaMessage = "自动通知未配置；媒体树生成后，请在 Emby 中手动刷新媒体库。"
 		}
-	} else if jellyfinState == "" {
-		jellyfinState = "not_run"
-		jellyfinMessage = "媒体树生成后会向 Jellyfin 提交刷新请求。"
+	} else if mediaState == "" {
+		mediaState = "not_run"
+		mediaMessage = "媒体树生成后会向 Emby 提交刷新请求。"
 	}
 	writeJSON(w, map[string]any{
 		"has_credentials": hasCreds, "authorized": s.connected(), "scanning": scanning, "rebuilding": rebuilding,
 		"scan_log": log, "last_error": lastErr, "channels": len(s.deps.Store.ListChannels()), "items": len(items), "videos": videos,
 		"needs_rebuild": !hasTree || built != rev, "active_channel_id": activeChannelID, "scan_progress": scanProgress,
-		"channel_video_counts": channelVideoCounts, "jellyfin_configured": jellyfinConfigured, "jellyfin_state": jellyfinState,
-		"jellyfin_message": jellyfinMessage, "jellyfin_updated_at": jellyfinUpdated, "strm_files": strmFiles, "strm_files_known": strmFilesKnown,
+		"channel_video_counts": channelVideoCounts, "media_server_configured": mediaConfigured, "media_server_state": mediaState,
+		"media_server_message": mediaMessage, "media_server_updated_at": mediaUpdated, "media_server_url": mediaURL, "strm_files": strmFiles, "strm_files_known": strmFilesKnown,
 	})
 }
 
@@ -493,7 +502,7 @@ func (s *Server) scanAll() {
 			failures = append(failures, "生成媒体树失败: "+err.Error())
 			s.logf("ERROR 重建: %v", err)
 		} else {
-			s.logf("OK 已自动生成 %v 个视频入口；%v", result["strm_files"], result["jellyfin_message"])
+			s.logf("OK 已自动生成 %v 个视频入口；%v", result["strm_files"], result["media_server_message"])
 			if warning, _ := result["warning"].(string); warning != "" {
 				failures = append(failures, warning)
 			}
@@ -522,40 +531,113 @@ func (s *Server) rebuild(ctx context.Context) (map[string]any, error) {
 		s.mu.Unlock()
 		return nil, err
 	}
-	// long：媒体树与 Jellyfin 刷新是两个阶段，生成完成后先释放重建状态再等待远端响应。
+	// long：媒体树与 Emby 刷新是两个阶段，生成完成后先释放重建状态再等待远端响应。
 	s.mu.Lock()
 	s.rebuilding = false
 	s.strmFiles = n
 	s.strmFilesKnown = true
-	if s.deps.NotifyJellyfin != nil {
-		s.jellyfinState = "notifying"
-		s.jellyfinMessage = "媒体树已生成，正在向 Jellyfin 提交刷新请求。"
+	if s.mediaServerConfigured() {
+		s.mediaState = "notifying"
+		s.mediaMessage = "媒体树已生成，正在向 Emby 提交刷新请求。"
 	} else {
-		s.jellyfinState = "not_configured"
-		s.jellyfinMessage = "媒体树已生成；自动通知未配置，请在 Jellyfin 中手动刷新媒体库。"
+		s.mediaState = "not_configured"
+		s.mediaMessage = "媒体树已生成；自动通知未配置，请在 Emby 中手动刷新媒体库。"
 	}
 	s.mu.Unlock()
-	result := map[string]any{"ok": true, "groups": len(groups), "strm_files": n, "media_dir": s.deps.MediaDir, "jellyfin_message": "媒体树已生成；请在 Jellyfin 中确认库扫描结果。"}
-	if s.deps.NotifyJellyfin != nil {
-		err := s.deps.NotifyJellyfin(ctx)
+	result := map[string]any{"ok": true, "groups": len(groups), "strm_files": n, "media_dir": s.deps.MediaDir, "media_server_message": "媒体树已生成；请在 Emby 中确认库扫描结果。"}
+	if s.mediaServerConfigured() {
+		err := s.notifyMediaServer(ctx)
 		s.mu.Lock()
-		s.jellyfinUpdated = time.Now().UTC().Format(time.RFC3339)
+		s.mediaUpdated = time.Now().UTC().Format(time.RFC3339)
 		if err != nil {
-			s.jellyfinState = "failed"
-			s.jellyfinMessage = "媒体树已生成，但 Jellyfin 刷新请求失败：" + err.Error()
+			s.mediaState = "failed"
+			s.mediaMessage = "媒体树已生成，但 Emby 刷新请求失败：" + err.Error()
 		} else {
-			s.jellyfinState = "notified"
-			s.jellyfinMessage = "已向 Jellyfin 发起库刷新请求；入库完成情况请在 Jellyfin 中确认。"
+			s.mediaState = "notified"
+			s.mediaMessage = "已向 Emby 发起库刷新请求；入库完成情况请在 Emby 中确认。"
 		}
 		s.mu.Unlock()
 		if err != nil {
-			result["warning"] = "媒体树已生成，但通知 Jellyfin 失败: " + err.Error()
+			result["warning"] = "媒体树已生成，但通知 Emby 失败: " + err.Error()
 		} else {
-			result["jellyfin_message"] = "已向 Jellyfin 发起库刷新请求；入库完成情况请在 Jellyfin 中确认。"
+			result["media_server_message"] = "已向 Emby 发起库刷新请求；入库完成情况请在 Emby 中确认。"
 		}
 	}
 	return result, nil
 }
+func (s *Server) mediaServerConfig() (string, string) {
+	if s.deps.MediaServer == nil {
+		return "", ""
+	}
+	return s.deps.MediaServer()
+}
+
+func (s *Server) mediaServerConfigured() bool {
+	url, key := s.mediaServerConfig()
+	return url != "" && key != ""
+}
+
+func (s *Server) notifyMediaServer(ctx context.Context) error {
+	url, key := s.mediaServerConfig()
+	if url == "" || key == "" {
+		return errors.New("媒体服务器未配置")
+	}
+	if s.deps.TestMediaServer != nil {
+		return s.deps.TestMediaServer(ctx, url, key)
+	}
+	return mediaserver.Refresh(ctx, url, key)
+}
+
+func (s *Server) handleGetMediaServer(w http.ResponseWriter, r *http.Request) {
+	url, key := s.mediaServerConfig()
+	writeJSON(w, map[string]any{"url": url, "configured": url != "" && key != ""})
+}
+
+func (s *Server) handleSaveMediaServer(w http.ResponseWriter, r *http.Request) {
+	if s.deps.SaveMediaServer == nil {
+		httpError(w, 500, "媒体服务器配置不可用")
+		return
+	}
+	var req struct {
+		URL    string `json:"url"`
+		APIKey string `json:"api_key"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		httpError(w, 400, "请求格式错误")
+		return
+	}
+	req.URL = strings.TrimSpace(req.URL)
+	req.APIKey = strings.TrimSpace(req.APIKey)
+	if req.URL == "" && req.APIKey == "" {
+		if err := s.deps.SaveMediaServer("", ""); err != nil {
+			httpError(w, 400, err.Error())
+			return
+		}
+		writeJSON(w, map[string]any{"ok": true, "configured": false})
+		return
+	}
+	if req.APIKey == "" {
+		_, old := s.mediaServerConfig()
+		req.APIKey = old
+	}
+	if req.APIKey == "" {
+		httpError(w, 400, "请填写 API Key")
+		return
+	}
+	if err := s.deps.SaveMediaServer(req.URL, req.APIKey); err != nil {
+		httpError(w, 400, err.Error())
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 20*time.Second)
+	defer cancel()
+	resp := map[string]any{"ok": true, "configured": true, "tested": true}
+	if err := s.notifyMediaServer(ctx); err != nil {
+		resp["tested"] = false
+		resp["test_error"] = err.Error()
+	}
+	writeJSON(w, resp)
+}
+
 func (s *Server) handleRebuild(w http.ResponseWriter, r *http.Request) {
 	if !s.taskMu.TryLock() {
 		httpError(w, 409, "扫描或重建正在执行，请等待完成")

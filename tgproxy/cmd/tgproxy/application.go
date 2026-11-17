@@ -119,6 +119,24 @@ func (a *application) saveCredentials(ctx context.Context, id int, hash string) 
 	}
 	return nil
 }
+func (a *application) mediaServer() (string, string) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.cfg.MediaServerURL, a.cfg.MediaServerAPIKey
+}
+
+func (a *application) saveMediaServer(url, key string) error {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	next := *a.cfg
+	next.MediaServerURL, next.MediaServerAPIKey = url, key
+	if err := config.Save(a.dataDir, &next); err != nil {
+		return err
+	}
+	a.cfg = &next
+	return nil
+}
+
 func (a *application) close() {
 	a.mu.Lock()
 	defer a.mu.Unlock()

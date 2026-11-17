@@ -17,7 +17,7 @@ const icons = {
   folder: '<path d="M3 7V5a2 2 0 0 1 2-2h5l3 4h6a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7Z"/>',
   telegram: '<path d="m3 10 18-7-5 18-5-7-8-4Z"/><path d="m11 14 5-6"/>',
   send: '<path d="m22 2-7 20-4-9-9-4 20-7Zm0 0L11 13"/>',
-  jellyfin: '<path d="M10.3 4.4a2 2 0 0 1 3.4 0l7 12.2a2 2 0 0 1-1.7 3H5a2 2 0 0 1-1.7-3L10.3 4.4Z"/><path d="m12 10 3.5 6h-7l3.5-6Z"/>',
+  emby: '<path d="M10.3 4.4a2 2 0 0 1 3.4 0l7 12.2a2 2 0 0 1-1.7 3H5a2 2 0 0 1-1.7-3L10.3 4.4Z"/><path d="m12 10 3.5 6h-7l3.5-6Z"/>',
   search: '<circle cx="10.5" cy="10.5" r="6.5"/><path d="m16 16 5 5"/>',
   close: '<path d="m6 6 12 12M6 18 18 6"/>',
   trash: '<path d="M3 6h18M9 6V3h6v3M5 6l1 15h12l1-15M10 10v7m4-7v7"/>',
@@ -35,12 +35,12 @@ const views = {
   overview: ['同步概览', '从频道到媒体库，每一步都清晰可见。'],
   channels: ['频道管理', '整理你的内容来源，让每一个频道各就其位。'],
   logs: ['运行日志', '查看扫描记录，快速定位需要处理的问题。'],
-  connections: ['连接设置', '管理 Telegram 授权和 Jellyfin 刷新通知。']
+  connections: ['连接设置', '管理 Telegram 授权和 Emby 刷新通知。']
 };
 const state = { status: null, channels: [], online: false, pending: '', refresh: null, view: 'overview', codeSent: false, passwordNeeded: false, loginExpanded: false, deleting: null, signatures: {}, toastTimer: null };
 const number = value => new Intl.NumberFormat('zh-CN').format(Number(value) || 0);
 const text = (id, value) => { $(id).textContent = value; };
-const taskBusy = () => !!(state.status?.scanning || state.status?.rebuilding || state.status?.jellyfin_state === 'notifying');
+const taskBusy = () => !!(state.status?.scanning || state.status?.rebuilding || state.status?.media_server_state === 'notifying');
 const locked = () => !state.online || !!state.pending || taskBusy();
 function element(tag, className, content) {
   const node = document.createElement(tag);
@@ -108,15 +108,15 @@ function scanStats() {
   const rows = state.channels.map(c => progress[c.id]).filter(Boolean);
   return { rows, done: rows.filter(p => ['completed', 'failed'].includes(p.status)).length, failed: rows.filter(p => p.status === 'failed').length, active: state.channels.find(c => String(c.id) === String(state.status.active_channel_id)) };
 }
-function jellyfinStatus() {
+function mediaServerStatus() {
   const s = state.status;
-  if (!s.jellyfin_configured) return ['未配置', 'neutral', '尚未开启自动通知。生成媒体树后，请在 Jellyfin 中手动刷新媒体库。'];
-  if (s.jellyfin_state === 'notifying') return ['提交中', 'active', '媒体树已生成，正在向 Jellyfin 提交刷新请求。'];
-  if (s.rebuilding) return ['等待生成', 'active', '媒体树生成后，会向 Jellyfin 提交新的刷新请求。'];
-  if (s.scanning) return ['等待扫描', 'neutral', '本次扫描结束后会自动生成媒体树，并通知 Jellyfin。'];
+  if (!s.media_server_configured) return ['未配置', 'neutral', '尚未开启自动通知。生成媒体树后，请在 Emby 中手动刷新媒体库。'];
+  if (s.media_server_state === 'notifying') return ['提交中', 'active', '媒体树已生成，正在向 Emby 提交刷新请求。'];
+  if (s.rebuilding) return ['等待生成', 'active', '媒体树生成后，会向 Emby 提交新的刷新请求。'];
+  if (s.scanning) return ['等待扫描', 'neutral', '本次扫描结束后会自动生成媒体树，并通知 Emby。'];
   if (s.needs_rebuild) return ['等待更新', 'warning', '索引已发生变化，请重建媒体树后提交刷新请求。'];
-  if (s.jellyfin_state === 'failed') return ['通知失败', 'error', s.jellyfin_message || '刷新请求失败，请检查 Jellyfin 服务与配置。'];
-  if (s.jellyfin_state === 'notified') return ['已通知', 'success', '刷新请求已提交。媒体库入库进度请在 Jellyfin 中查看。'];
+  if (s.media_server_state === 'failed') return ['通知失败', 'error', s.media_server_message || '刷新请求失败，请检查 Emby 服务与配置。'];
+  if (s.media_server_state === 'notified') return ['已通知', 'success', '刷新请求已提交。媒体库入库进度请在 Emby 中查看。'];
   return ['已配置', 'neutral', '自动通知已配置，本次服务运行尚无请求记录。'];
 }
 function stage(id, label, tone) { text(`stage-${id}-label`, label); $(`stage-${id}`).dataset.state = tone; }
@@ -126,9 +126,9 @@ function renderOverview() {
   text('total-entries', s.strm_files_known ? number(s.strm_files) : s.needs_rebuild ? '待生成' : '已生成');
   $('setup-banner').hidden = s.authorized;
   const scanDone = stats.rows.length === state.channels.length && stats.done === state.channels.length && state.channels.length > 0;
-  let title = '准备好下一次同步', detail = '扫描全部频道，自动更新媒体入口并通知 Jellyfin。', label = '就绪', tone = 'neutral';
+  let title = '准备好下一次同步', detail = '扫描全部频道，自动更新媒体入口并通知 Emby。', label = '就绪', tone = 'neutral';
   // long: scanning 覆盖整个流水线，先判断重建和通知，避免后半程仍显示“频道扫描中”。
-  if (s.jellyfin_state === 'notifying') { title = '正在通知 Jellyfin'; detail = '媒体树已生成，等待 Jellyfin 确认刷新请求。'; label = '通知中'; tone = 'active'; }
+  if (s.media_server_state === 'notifying') { title = '正在通知 Emby'; detail = '媒体树已生成，等待 Emby 确认刷新请求。'; label = '通知中'; tone = 'active'; }
   else if (s.rebuilding) { title = '正在生成媒体树'; detail = '根据最新索引同步媒体入口，完成后自动提交刷新。'; label = '生成中'; tone = 'active'; }
   else if (s.scanning) { title = stats.active ? `正在扫描 ${stats.active.title || stats.active.ref}` : '正在扫描频道'; detail = stats.active ? `当前频道已发现 ${number(s.scan_progress?.[stats.active.id]?.videos_found)} 个视频，完整数量以扫描完成后为准。` : '任务已启动，正在读取频道视频历史。'; label = '扫描中'; tone = 'active'; }
   else if (!s.authorized) { title = '等待 Telegram 连接'; detail = '请前往连接设置登录，或等待已有会话恢复连接。'; label = '待连接'; tone = 'warning'; }
@@ -140,17 +140,17 @@ function renderOverview() {
   text('task-title', title); text('task-description', detail); setBadge('task-badge', label, tone);
   if (stats.failed && !s.scanning) stage('scan', `${stats.failed} 个失败`, 'error');
   else if (scanDone) stage('scan', `${stats.done} 个已处理`, 'success');
-  else if (s.scanning && !s.rebuilding && s.jellyfin_state !== 'notifying') stage('scan', `${stats.done} / ${state.channels.length} 个已处理`, 'active');
+  else if (s.scanning && !s.rebuilding && s.media_server_state !== 'notifying') stage('scan', `${stats.done} / ${state.channels.length} 个已处理`, 'active');
   else stage('scan', s.authorized ? '暂无记录' : '等待连接', 'neutral');
   stage('tree', s.rebuilding ? '生成中' : s.needs_rebuild ? '待生成' : '已生成', s.rebuilding ? 'active' : s.needs_rebuild ? 'neutral' : 'success');
-  const [jfLabel, jfTone, jfDescription] = jellyfinStatus();
-  stage('notify', jfLabel, jfTone); setBadge('jellyfin-badge', jfLabel, jfTone);
-  text('jellyfin-description', jfDescription); text('notify-configured', s.jellyfin_configured ? '已启用' : '未配置');
-  text('notify-time', stamp(s.jellyfin_updated_at)); text('tree-state', s.rebuilding ? '生成中' : s.needs_rebuild ? '等待更新' : '与索引一致');
-  $('task-progress').hidden = !s.scanning || s.rebuilding || s.jellyfin_state === 'notifying';
+  const [jfLabel, jfTone, jfDescription] = mediaServerStatus();
+  stage('notify', jfLabel, jfTone); setBadge('media-server-badge', jfLabel, jfTone);
+  text('media-server-description', jfDescription); text('notify-configured', s.media_server_configured ? '已启用' : '未配置');
+  text('notify-time', stamp(s.media_server_updated_at)); text('tree-state', s.rebuilding ? '生成中' : s.needs_rebuild ? '等待更新' : '与索引一致');
+  $('task-progress').hidden = !s.scanning || s.rebuilding || s.media_server_state === 'notifying';
   text('progress-description', '已处理频道'); text('progress-fraction', `${stats.done} / ${state.channels.length}`);
   $('progress').max = Math.max(1, state.channels.length); $('progress').value = stats.done;
-  text('task-footnote', taskBusy() ? '任务在服务端执行，关闭页面不会中断。' : '扫描后自动生成媒体树并通知 Jellyfin。');
+  text('task-footnote', taskBusy() ? '任务在服务端执行，关闭页面不会中断。' : '扫描后自动生成媒体树并通知 Emby。');
   text('preview-count', number(state.channels.length)); text('preview-shown', state.channels.length > 5 ? `显示前 5 个，共 ${number(state.channels.length)} 个` : `共 ${number(state.channels.length)} 个频道`);
   renderTable('channel-preview', state.channels.slice(0, 5), false);
   $('overview-error').hidden = !s.last_error; text('overview-error-text', s.last_error?.split('\n')[0] || '');
@@ -229,10 +229,12 @@ function renderConnections() {
   $('account-connected').hidden = !s.authorized || state.loginExpanded;
   $('login-form').hidden = s.authorized && !state.loginExpanded;
   $('cancel-login').hidden = !s.authorized;
-  const [label, tone, description] = jellyfinStatus();
-  setBadge('settings-jellyfin-badge', s.jellyfin_configured ? '已配置' : '未配置', s.jellyfin_configured ? 'success' : 'neutral');
-  text('settings-jellyfin-copy', description); text('settings-notify-state', label); $('settings-notify-state').dataset.state = tone;
-  text('settings-notify-time', stamp(s.jellyfin_updated_at));
+  const [label, tone, description] = mediaServerStatus();
+  setBadge('settings-media-server-badge', s.media_server_configured ? '已配置' : '未配置', s.media_server_configured ? 'success' : 'neutral');
+  text('settings-media-server-copy', description); text('settings-notify-state', label); $('settings-notify-state').dataset.state = tone;
+  text('settings-notify-time', stamp(s.media_server_updated_at));
+  const urlInput = $('media-server-url');
+  if (document.activeElement !== urlInput) urlInput.value = s.media_server_url || '';
 }
 function controls() {
   const busy = locked(), s = state.status;
@@ -244,7 +246,8 @@ function controls() {
   $('send-code').disabled = busy || !s?.has_credentials;
   $('login-submit').disabled = busy || !state.codeSent;
   ['save-credentials', 'relogin', 'confirm-delete'].forEach(id => { $(id).disabled = busy; });
-  ['phone', 'code', 'password', 'app-id', 'app-hash'].forEach(id => { $(id).disabled = busy; });
+  ['phone', 'code', 'password', 'app-id', 'app-hash', 'media-server-url', 'media-server-key'].forEach(id => { $(id).disabled = busy; });
+  $('media-server-save').disabled = busy;
   ['cancel-delete', 'cancel-delete-icon'].forEach(id => { $(id).disabled = state.pending === 'delete'; });
   $('refresh').disabled = !!state.refresh;
 }
@@ -310,12 +313,25 @@ $('add-form').addEventListener('submit', async event => {
   try { const result = await mutate('add', '/api/channels', { ref }); $('channel-ref').value = ''; message('add-message', `已添加 ${result.title || ref}，回到同步概览即可扫描。`, 'success'); }
   catch (error) { message('add-message', error.message, 'error'); }
 });
+$('media-server-form').addEventListener('submit', async event => {
+  event.preventDefault();
+  const url = $('media-server-url').value.trim();
+  const key = $('media-server-key').value.trim();
+  message('media-server-message', '正在保存并测试…');
+  try {
+    const result = await mutate('media-server', '/api/media-server', { url, api_key: key });
+    $('media-server-key').value = '';
+    if (result.test_error) message('media-server-message', `已保存，但测试失败：${result.test_error}`, 'error');
+    else if (!result.configured) message('media-server-message', '已清除媒体服务器配置。', 'success');
+    else message('media-server-message', '已保存，刷新请求成功。', 'success');
+  } catch (error) { message('media-server-message', error.message, 'error'); }
+});
 $('scan').addEventListener('click', async () => {
   try { await mutate('scan', '/api/scan', {}); notify('扫描已启动，进度会自动更新。'); }
   catch (error) { notify(error.message, 'error'); }
 });
 $('rebuild').addEventListener('click', async () => {
-  try { const result = await mutate('rebuild', '/api/rebuild', {}); notify(result.warning || `已生成 ${number(result.strm_files)} 个媒体入口。${result.jellyfin_message || ''}`, result.warning ? 'error' : 'success'); }
+  try { const result = await mutate('rebuild', '/api/rebuild', {}); notify(result.warning || `已生成 ${number(result.strm_files)} 个媒体入口。${result.media_server_message || ''}`, result.warning ? 'error' : 'success'); }
   catch (error) { notify(error.message, 'error'); }
 });
 ['channel-search', 'channel-filter', 'channel-sort'].forEach(id => $(id).addEventListener(id === 'channel-search' ? 'input' : 'change', () => { if (state.status) renderChannels(); }));

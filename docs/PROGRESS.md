@@ -1,95 +1,34 @@
 # 项目进度
 
-## 2026-11-08 后续排障与修复
+> 更新：2026-11-17
 
-- 已修复 Jellyfin 空库与视频尾块截断，接通扫描完成 → 自动重建 → Jellyfin 刷新的流程。
-- 已修复历史分页、同名来源覆盖、缓存取消/错误重试、DC 迁移/引用刷新、保存错误与连接生命周期问题。
-- 完整历史已扫描 31,878 个视频，31,878 个独立 STRM 与索引逐项一致；Jellyfin 正在后台处理新批次。
-- 全量测试、race、vet、构建以及线上 Range/ffprobe/Jellyfin 分段流已验证。详细边界与最终扫描结果见 [审计记录](AUDIT-20261108.md)。
-- TDL 连接池修复已推送到个人 fork 分支；tgproxy 当前 go.mod 固定引用 TDL 与 gotd 两个个人 fork commit，本地 Linux/amd64 静态二进制构建通过。
-- 以下为初次开发阶段的历史记录，旧的待办及数量不代表后续修复状态。
+## 当前状态
 
----
+- tgproxy 已完成：Telegram 登录、频道扫描、媒体树生成、Range 拉流、管理控制台
+- 媒体服务器：Emby 4.10.2.0（systemd，8096），媒体库 **TG频道** → `/home/lee/tgproxy/media`
+- 媒体服务器刷新：重建媒体树后调用 `POST /Library/Refresh`，返回 204 视为已接收
+- 已扫描 31,886 个视频，媒体树生成 31,886 个 `.strm`
+- 服务：`tgproxy`（systemd user，8080）运行中；Emby 8096 运行中
 
-> 更新：2026-11-08 20:40
+## 已完成的工程点
 
-## 总体进度
-
-```
-[███████████████████████░] ~95%
-
-✅ 1. Jellyfin 服务端部署        — 完成
-✅ 2. tgproxy 开发+部署          — 完成（已扫描 2 频道 199 条目，等用户登录后重建树）
-✅ 3. 关闭服务器转码             — 完成
-⏳ 4. 手机客户端配置             — 待用户完成网页登录后即可（见 USAGE.md）
-```
-
-## 已完成
-
-### 开发（本地 macOS）
-
-| 日期 | 工作 | 结果 |
-|------|------|------|
-| 11-08 | 调研 tdl v0.20.4 拉流缺陷（读源码） | 确认 `--serve` 无缓存/无预取/attachment 下载头，决定自研 |
-| 11-08 | `internal/stream`：LRU chunk 缓存 + Range HTTP handler | 测试全过：字节一致性、并发 single-flight 去重、seek 90% 只拉 ≤12 chunks、预取 333ms→84ms |
-| 11-08 | `internal/media`：集数解析 + 媒体树归类 | 识别 `S01E02`/`1x02`/`第x集`/`EP02`/`【01】` 等格式；跨频道同名剧归并；tvshow.nfo + .strm 生成 |
-| 11-08 | `internal/telegram`：gotd v0.163 客户端 | 分步登录（手机号→验证码→2FA）、频道解析、历史扫描、chunk 拉流（upload.getFile + SetPrecise） |
-| 11-08 | `internal/web` + `cmd/tgproxy`：管理页面 | 频道增删、扫描、重建媒体树、状态轮询；登录全走网页 |
-| 11-08 | 本地端到端验证 | Docker Jellyfin 12.4 + nginx Range 测试源：6 个 .strm 全部识别、直连播放、25%/50%/90% seek 全 206 |
-| 11-08 | 服务器部署 | Jellyfin docker 8097 + tgproxy systemd 8080 + 媒体库，全部就绪 |
-| 11-08 | 登录 bug 修复（PHONE_CODE_INVALID） | 见下方「踩过的坑」#1：改为有状态登录会话 |
-| 11-08 | 简化登录：内置官方桌面端 API 凭证 | 见下方「踩过的坑」#2；用户只需手机号+验证码一步登录 |
-
-### 部署（服务器 192.168.1.2）
-
-| 项目 | 状态 |
+| 模块 | 内容 |
 |------|------|
-| 交叉编译 linux/amd64 静态二进制 → `~/tgproxy/tgproxy` | ✅ |
-| systemd **user** 服务 `tgproxy.service`（enabled，运行中） | ✅ |
-| Jellyfin 12.4 docker 容器，端口 8097 | ✅ |
-| 向导完成：管理员 `jellyfin / <密码见本地记录，不入库>`，界面 zh-CN | ✅ |
-| 媒体库 "TG频道"（tvshows → `~/tgproxy/media`） | ✅ |
-| 转码禁用（编码设置 + 用户权限双保险） | ✅ |
-| v2 更新：凭证改网页填写，unit 去掉 PLACEHOLDER 环境变量 | ✅ 2026-11-08 19:31 部署并验证 |
+| `internal/stream` | LRU chunk 缓存、单区间/后缀 Range、206/416、并发合并、有限预取 |
+| `internal/media` | 集数解析、跨频道同名归并、`剧名/Season 01/*.strm` 结构 |
+| `internal/telegram` | gotd 客户端、有状态登录（手机号/验证码/2FA）、频道扫描、分块拉流 |
+| `internal/web` | 频道管理、扫描、重建媒体树、状态轮询、媒体服务器通知状态 |
+| `internal/mediaserver` | 媒体服务器刷新通知（Emby 兼容），拒绝携带密钥重定向 |
 
-## ⚠ 踩过的坑（重要经验）
+## 关键经验
 
-### 1. TG 登录 PHONE_CODE_INVALID（验证码总是无效）
+1. **TG 登录必须是有状态会话**：`phone_code_hash` 与 MTProto 连接绑定，跨请求重新发码会导致 `PHONE_CODE_INVALID`
+2. **strm 里的流地址必须是媒体服务器可达的地址**：使用宿主机 LAN IP（`192.168.1.2:8080`），不能用 `127.0.0.1`
+3. **扫描完成与媒体库入库是两个阶段**：重建成功只代表入口生成，Emby 的元数据扫描在后台继续
+4. **尾块 Range 必须按 4096 对齐**：不足一块时发零长度请求会截断 MP4 尾部索引，导致媒体服务器无法探测
 
-- **现象**：网页登录时点「发送验证码」后又收到一条新验证码，填第一条报 PHONE_CODE_INVALID
-- **根因**：初版登录是"无状态"的——发码和提交验证码各自新建 MTProto 连接，Telegram 发码时返回的 `phone_code_hash` 随连接关闭丢失；提交时重新发码导致旧码失效
-- **修复**：登录改为**有状态会话**（`internal/telegram/client.go`）——`SendCode` 建一条持久 loginClient（goroutine 维持 `client.Run` 存活）保存 `loginPending{phone, phoneCodeHash}`；`SignIn`/`SubmitPassword` 复用同一连接与哈希；成功后 `finishLoginLocked` 取 session 并拆除
-- **教训**：gotd 的 auth 流程中 phone_code_hash 与连接生命周期绑定，跨请求登录必须保持同一连接
+## 后续可选
 
-### 2. 两层登录的必要性 + 简化
-
-- **疑问**：为什么要先填 api_id/api_hash 再登账号？
-- **结论**：api_id/api_hash 是 Telegram 强制的"应用身份证"，无法省略，但**不该让用户填**——tdl 的做法是内置公共凭证（官方桌面端 `AppID: 2040 / "b18441a1ff607e10a989891a5462e627"`）
-- **修复**：`config.Defaults()` 内置桌面端凭证作为默认；用户填过的凭证仍可覆盖（页面凭证卡片保留，供防限流时用自备凭证）
-- **教训**：面向用户的登录应该只有"手机号 → 验证码 →（2FA）密码"三步
-
-### 3. Jellyfin 12.4 API 与 v10 差异
-
-见 DEPLOY.md 踩坑表（FirstUser 必须先调、标准 Authorization 头、VirtualFolders 用 query 参数、`/Videos/{id}/stream?static=true`）。
-
-### 4. 本地 e2e 时 strm 地址容器内不可达
-
-- **现象**：本地 Jellyfin docker 测试播放 500 "Connection refused"
-- **根因**：strm 里的流地址写了 `127.0.0.1:8081`，Jellyfin 容器内的 127.0.0.1 是容器自己
-- **修复**：strm 用 `http://host.docker.internal:8081` + 容器加 `--add-host=host.docker.internal:host-gateway`（服务器部署同理：strm-base 必须是容器可达的宿主 LAN IP）
-
-## ⏳ 待办（按顺序）
-
-1. **用户**：打开 http://192.168.1.2:8080 → 手机号 → 发送验证码 → 填验证码登录（有 2FA 填密码）
-2. **用户**：添加频道 → 扫描全部频道 → 重建媒体树
-3. **用户**：Jellyfin (8097) 刷新媒体库，确认剧集出现
-4. **用户**：手机装 Jellyfin App，服务器 `http://192.168.1.2:8097`，账号 `jellyfin / <密码见本地记录，不入库>`
-5. （可选，需时叫我）端到端复验：播放一集、拖进度条确认 206 生效
-
-## 已知问题 / 注意事项
-
-- 历史问题：开发阶段曾用本地 replace 引用 `dev/tdl-src/core`；2026-11-08 已改成个人 fork 的固定 commit，新的构建不依赖该目录。
-- 服务器 `lee` 用户 sudo 需密码（脚本里不可交互），故 tgproxy 用 **user-level systemd**（`systemctl --user`），已确认 Linger=yes（开机自启不依赖登录会话）
-- Jellyfin 12.4 与 v10 API 差异较多（向导端点、认证头、stream 路由），踩坑记录见 DEPLOY.md
-- Telegram CDN 重定向（`upload.getFileCdnRedirect`）仍暂不支持；超过 2 GiB 本身不是拒绝条件。
-- 媒体树里无集号文件（电影）命名保留清洗后的名字（如 "星际穿越 Interstellar 2014"），集号 S01E00
+- Telegram CDN 重定向（`upload.getFileCdnRedirect`）尚未支持；超过 2 GiB 本身不是拒绝条件
+- 媒体树中无集号文件（电影）按清洗后的名称命名，集号使用 S01E00
+- 如需 302/直连优化，属于网盘中间件项目，不在 tgproxy 范围

@@ -1,15 +1,23 @@
 # tgproxy
 
-tgproxy 是一个自托管的 Telegram 视频频道代理。它扫描频道中的视频消息，生成 Jellyfin 可识别的 `.strm` 媒体树；播放时由自研 HTTP Range 拉流层按需从 Telegram 读取分块。
+tgproxy 是一个自托管的 Telegram 视频频道代理。它扫描频道中的视频消息，生成 Emby 可识别的 `.strm` 媒体树；播放时由自研 HTTP Range 拉流层按需从 Telegram 读取分块。
 
-tgproxy 负责索引、媒体树和稳定的 Range 读取；视频浏览、元数据展示和播放由 Jellyfin 完成。
+tgproxy 负责索引、媒体树和稳定的 Range 读取；视频浏览、元数据展示和播放由 Emby 完成。
 
 ## 当前版本
 
-- 最新发行版：[v0.1.1](https://github.com/lonnnnnng/tgproxy/releases/tag/v0.1.1)
+- 最新发行版：[v0.2.0](https://github.com/lonnnnnng/tgproxy/releases/tag/v0.2.0)
 - 线上控制台：[http://192.168.1.2:8080/](http://192.168.1.2:8080/)
-- 线上 Jellyfin：[http://192.168.1.2:8097/](http://192.168.1.2:8097/)
+- 线上 Emby：[http://192.168.1.2:8096/](http://192.168.1.2:8096/)
 - 当前部署方式：Linux/amd64 静态二进制 + `systemd --user`
+
+## v0.2.0 变更
+
+- 媒体服务器适配切换为 Emby，保留标准 `/Library/Refresh` 通知
+- 服务地址与 API Key 改为在控制台手动填写，保存后立即测试，不再写死
+- 新增 `GET/POST /api/media-server` 配置接口
+- 移除旧媒体服务器专属命名与兼容逻辑
+- 更新部署、使用与审计文档
 
 ## 工作流
 
@@ -17,7 +25,7 @@ tgproxy 负责索引、媒体树和稳定的 Range 读取；视频浏览、元�
 Telegram 频道
       │
       ▼
-扫描历史消息 ──► 视频索引 ──► 媒体树同步 ──► Jellyfin 扫描
+扫描历史消息 ──► 视频索引 ──► 媒体树同步 ──► Emby 扫描
                                       │
                                       ▼
                          /stream/<channel>_<message>
@@ -30,7 +38,7 @@ Telegram 频道
 
 1. **Telegram 扫描**：读取频道历史并更新本地索引。
 2. **媒体树**：按剧名、季、集生成或同步 `.strm` 文件。
-3. **Jellyfin**：向已配置的 Jellyfin 提交刷新请求。请求成功只代表 Jellyfin 已收到任务，不代表库内元数据已经处理完成。
+3. **Emby**：向已配置的 Emby 提交刷新请求。请求成功只代表 Emby 已收到任务，不代表库内元数据已经处理完成。
 
 ## 主要能力
 
@@ -42,7 +50,7 @@ Telegram 频道
 - LRU 分块缓存、并发请求合并、有限顺序预取和取消恢复。
 - Telegram 文件 DC 迁移与过期文件引用刷新。
 - 浅色/深色控制台主题，以及桌面和移动端布局。
-- Jellyfin 刷新通知和明确的未配置、成功、失败状态。
+- Emby 刷新通知和明确的未配置、成功、失败状态。
 
 ## 快速使用
 
@@ -51,8 +59,8 @@ Telegram 频道
 1. 登录 Telegram。
 2. 添加频道。
 3. 点击 **扫描并更新**。
-4. 等待频道扫描、媒体树生成和 Jellyfin 通知完成。
-5. 打开 Jellyfin，等待媒体库扫描结果出现。
+4. 等待频道扫描、媒体树生成和 Emby 通知完成。
+5. 打开 Emby，等待媒体库扫描结果出现。
 
 新增内容时再次扫描即可。扫描、重建和频道修改互斥；单个频道失败时会保留该频道的旧索引，并把错误保留在控制台日志中。
 
@@ -69,7 +77,7 @@ Go 程序默认使用 `~/.tgproxy` 作为数据目录，也可以通过参数指
 -strm-base  写入 .strm 的流地址前缀，默认根据局域网地址推导
 ```
 
-`config.json` 示例：
+推荐在控制台「连接设置 → Emby」中填写服务地址与 API Key，保存后会立即测试；也可以直接编辑 `config.json`。示例：
 
 ```json
 {
@@ -81,12 +89,12 @@ Go 程序默认使用 `~/.tgproxy` 作为数据目录，也可以通过参数指
   "chunk_size": 524288,
   "cache_max_bytes": 536870912,
   "prefetch_chunks": 2,
-  "jellyfin_url": "http://127.0.0.1:8097",
-  "jellyfin_api_key": "<Jellyfin 专用 API Key>"
+  "media_server_url": "http://127.0.0.1:8096",
+  "media_server_api_key": "<Emby API Key>"
 }
 ```
 
-Telegram 默认使用内置的公开应用标识，通常只需要在控制台登录账号。自备 `api_id` / `api_hash` 时可以在控制台覆盖。`jellyfin_url` 和 `jellyfin_api_key` 必须同时配置；session、API key 和频道访问缓存不能提交到 Git。
+Telegram 默认使用内置的公开应用标识，通常只需要在控制台登录账号。自备 `api_id` / `api_hash` 时可以在控制台覆盖。媒体服务器地址与 API Key 可在控制台随时修改，不写死在代码中；session、API key 和频道访问缓存不能提交到 Git。
 
 ## 拉流设计
 
@@ -157,21 +165,21 @@ Restart=on-failure
 RestartSec=5
 ```
 
-更新流程是：本地交叉编译 → 上传 `tgproxy.new` → 校验 SHA256 → 备份旧二进制 → 重启服务 → 检查 `/api/status`。详细路径、Jellyfin 容器挂载和回滚方式见 [docs/DEPLOY.md](docs/DEPLOY.md)。
+更新流程是：本地交叉编译 → 上传 `tgproxy.new` → 校验 SHA256 → 备份旧二进制 → 重启服务 → 检查 `/api/status`。详细路径、Emby 媒体库与权限和回滚方式见 [docs/DEPLOY.md](docs/DEPLOY.md)。
 
 ## 已知限制
 
 - 不支持 Telegram CDN redirect。
 - 不支持 multipart Range。
-- Jellyfin 库内资源数和 tgproxy 索引数属于两个阶段，不保证同时一致。
-- 外网访问需要同时保证 Jellyfin、客户端和 `.strm` 中的流地址可达。
+- Emby 库内资源数和 tgproxy 索引数属于两个阶段，不保证同时一致。
+- 外网访问需要同时保证 Emby、客户端和 `.strm` 中的流地址可达。
 - 频道文件名不一定包含可靠的剧名和集数，媒体归类规则不能替代人工校正。
 
 ## 文档
 
 - [使用指南](docs/USAGE.md)：登录、频道扫描、重建、播放和排障。
-- [部署与配置](docs/DEPLOY.md)：服务器目录、systemd、Jellyfin 和回滚。
+- [部署与配置](docs/DEPLOY.md)：服务器目录、systemd、Emby 和回滚。
 - [代码结构](docs/CODE.md)：模块职责和关键调用链。
 - [项目进度](docs/PROGRESS.md)：修复记录和后续事项。
-- [审计记录](docs/AUDIT-20261108.md)：Range、媒体树、Jellyfin 和线上验收证据。
+- [审计记录](docs/AUDIT-20261108.md)：Range、媒体树、Emby 和线上验收证据。
 - [设计系统](DESIGN.md)：控制台视觉和交互约定。

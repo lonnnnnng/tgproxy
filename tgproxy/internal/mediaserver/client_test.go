@@ -1,4 +1,4 @@
-package jellyfin
+package mediaserver
 
 import (
 	"context"

@@ -1,9 +1,10 @@
-package jellyfin
+package mediaserver
 
 import (
 	"context"
 	"fmt"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 )
@@ -11,7 +12,7 @@ import (
 func Refresh(ctx context.Context, base, key string) error {
 	ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
 	defer cancel()
-	r, err := http.NewRequestWithContext(ctx, http.MethodPost, strings.TrimRight(base, "/")+"/Library/Refresh", nil)
+	r, err := http.NewRequestWithContext(ctx, http.MethodPost, strings.TrimRight(base, "/")+"/Library/Refresh?api_key="+url.QueryEscape(key), nil)
 	if err != nil {
 		return err
 	}
@@ -20,11 +21,11 @@ func Refresh(ctx context.Context, base, key string) error {
 	c := &http.Client{CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
 	resp, err := c.Do(r)
 	if err != nil {
-		return fmt.Errorf("Jellyfin 连接失败")
+		return fmt.Errorf("Emby 连接失败")
 	}
 	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusNoContent {
-		return fmt.Errorf("Jellyfin 刷新返回 HTTP %d", resp.StatusCode)
+	if resp.StatusCode != http.StatusNoContent && resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("Emby 刷新返回 HTTP %d", resp.StatusCode)
 	}
 	return nil
 }

@@ -143,7 +143,7 @@ func chunkLimit(want int64) int64 {
 		return max
 	}
 	// long: 尾块不足 4096 字节时仍需请求一整段；向下取整会发出零长度请求，
-	// 导致 MP4 尾部索引丢失，Jellyfin 无法探测媒体信息或播放。
+	// 导致 MP4 尾部索引丢失，Emby 无法探测媒体信息或播放。
 	return (want + 4095) / 4096 * 4096
 }
 

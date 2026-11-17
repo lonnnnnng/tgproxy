@@ -129,7 +129,7 @@ progress { width: 100%; height: 5px; display: block; appearance: none; border: 0
 progress::-webkit-progress-bar { background: var(--line); }
 progress::-webkit-progress-value { background: var(--accent); }
 progress::-moz-progress-bar { background: var(--accent); }
-.jellyfin-panel { display: flex; flex-direction: column; padding-top: 24px; }
+.media-server-panel { display: flex; flex-direction: column; padding-top: 24px; }
 .integration-heading { display: flex; gap: 12px; align-items: center; padding: 0 24px; }
 .integration-heading h2 { font-size: 15px; }
 .integration-heading p { color: var(--muted); font-size: 12px; margin-top: 2px; }
@@ -253,7 +253,7 @@ dialog h2 { font-size: 20px; }
   .settings-grid { grid-template-columns: minmax(0,1fr); }
   .toast { left: calc(50% + 95px); }
 }
-@media (max-width: 950px) { .overview-grid { grid-template-columns: minmax(0,1fr); } .page-heading { align-items: start; flex-wrap: wrap; } .jellyfin-panel { padding-top: 20px; } .integration-description { min-height: 0; } .table-toolbar { flex-wrap: wrap; } .search-input { max-width: none; } }
+@media (max-width: 950px) { .overview-grid { grid-template-columns: minmax(0,1fr); } .page-heading { align-items: start; flex-wrap: wrap; } .media-server-panel { padding-top: 20px; } .integration-description { min-height: 0; } .table-toolbar { flex-wrap: wrap; } .search-input { max-width: none; } }
 @media (max-width: 700px) {
   .sidebar { position: static; width: 100%; padding: 14px 16px 0; border-right: 0; border-bottom: 1px solid var(--line); }
   .brand { padding: 0 0 15px; font-size: 20px; gap: 9px; }
