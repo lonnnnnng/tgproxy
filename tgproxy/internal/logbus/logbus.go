@@ -43,7 +43,7 @@ func (b *Bus) Add(level, format string, args ...any) {
 	b.seq++
 	b.entries = append(b.entries, Entry{
 		Seq:     b.seq,
-		Time:    time.Now().Format(time.RFC3339),
+		Time:    time.Now().Format("2006-01-02T15:04:05.000Z07:00"),
 		Level:   level,
 		Message: fmt.Sprintf(format, args...),
 	})

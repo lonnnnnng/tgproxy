@@ -6,10 +6,14 @@ tgproxy 负责索引、媒体树和稳定的 Range 读取；视频浏览、元�
 
 ## 当前版本
 
-- 最新发行版：[v0.2.2](https://github.com/lonnnnnng/tgproxy/releases/tag/v0.2.2)
+- 最新发行版：[v0.2.3](https://github.com/lonnnnnng/tgproxy/releases/tag/v0.2.3)
 - 线上控制台：[http://192.168.1.2:8080/](http://192.168.1.2:8080/)
 - 线上 Emby：[http://192.168.1.2:8096/](http://192.168.1.2:8096/)
 - 当前部署方式：Linux/amd64 静态二进制 + `systemd --user`
+
+## v0.2.3 变更
+
+- 日志时间戳包含真实毫秒（此前毫秒位固定为 .000）
 
 ## v0.2.2 变更
 
