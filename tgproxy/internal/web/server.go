@@ -97,6 +97,7 @@ func NewServer(deps Deps) *Server {
 	if deps.AutoScan != nil {
 		go s.autoScanLoop()
 	}
+	go s.ensureAllLibraries()
 	return s
 }
 
@@ -433,6 +434,23 @@ func (s *Server) handleAddChannel(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, result)
 }
 
+func (s *Server) ensureAllLibraries() {
+	if s.deps.Store == nil || s.deps.MediaDir == "" {
+		return
+	}
+	url, key := s.mediaServerConfig()
+	if url == "" || key == "" {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+	for _, ch := range s.deps.Store.ListChannels() {
+		if err := s.ensureChannelLibrary(ctx, ch); err != nil {
+			s.logf("error", "同步媒体库失败（%s）：%v", ch.Title, err)
+		}
+	}
+}
+
 func (s *Server) ensureChannelLibrary(ctx context.Context, ch store.Channel) error {
 	url, key := s.mediaServerConfig()
 	if url == "" || key == "" {
@@ -445,7 +463,20 @@ func (s *Server) ensureChannelLibrary(ctx context.Context, ch store.Channel) err
 	if err := os.MkdirAll(path, 0o755); err != nil {
 		return err
 	}
-	if err := mediaserver.EnsureLibrary(ctx, url, key, ch.LibraryName, path); err != nil {
+	var err error
+	for attempt := 0; attempt < 2; attempt++ {
+		if err = mediaserver.EnsureLibrary(ctx, url, key, ch.LibraryName, path); err == nil {
+			break
+		}
+		if attempt == 0 {
+			select {
+			case <-ctx.Done():
+				return err
+			case <-time.After(time.Second):
+			}
+		}
+	}
+	if err != nil {
 		return err
 	}
 	s.logf("success", "已创建/配置媒体库 %q → %s", ch.LibraryName, path)

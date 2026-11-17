@@ -55,8 +55,25 @@ func request(ctx context.Context, method, base, key, path string, query url.Valu
 	return c.Do(r)
 }
 
-// ListLibraries returns all Emby virtual folders.
+// ListLibraries returns all Emby virtual folders, retrying transient failures.
 func ListLibraries(ctx context.Context, base, key string) ([]Library, error) {
+	var last error
+	for attempt := 0; attempt < 3; attempt++ {
+		libs, err := listLibrariesOnce(ctx, base, key)
+		if err == nil {
+			return libs, nil
+		}
+		last = err
+		select {
+		case <-ctx.Done():
+			return nil, err
+		case <-time.After(500 * time.Millisecond):
+		}
+	}
+	return nil, last
+}
+
+func listLibrariesOnce(ctx context.Context, base, key string) ([]Library, error) {
 	resp, err := request(ctx, http.MethodGet, base, key, "/Library/VirtualFolders", url.Values{})
 	if err != nil {
 		return nil, fmt.Errorf("Emby 连接失败")
@@ -100,7 +117,8 @@ func EnsureLibrary(ctx context.Context, base, key, name, path string) error {
 	}
 	libs, err = ListLibraries(ctx, base, key)
 	if err != nil {
-		return err
+		// 库已创建，配置可留到下次启动/添加时再补。
+		return nil
 	}
 	for _, lib := range libs {
 		for _, loc := range lib.Locations {
@@ -109,7 +127,7 @@ func EnsureLibrary(ctx context.Context, base, key, name, path string) error {
 			}
 		}
 	}
-	return fmt.Errorf("Emby 创建媒体库后未找到路径")
+	return nil
 }
 
 func configureLibrary(ctx context.Context, base, key, itemID, path string, libs []Library) error {
