@@ -6,10 +6,16 @@ tgproxy 负责索引、媒体树和稳定的 Range 读取；视频浏览、元�
 
 ## 当前版本
 
-- 最新发行版：[v0.3.0](https://github.com/lonnnnnng/tgproxy/releases/tag/v0.3.0)
+- 最新发行版：[v0.3.1](https://github.com/lonnnnnng/tgproxy/releases/tag/v0.3.1)
 - 线上控制台：[http://192.168.1.2:8080/](http://192.168.1.2:8080/)
 - 线上 Emby：[http://192.168.1.2:8096/](http://192.168.1.2:8096/)
 - 当前部署方式：Linux/amd64 静态二进制 + `systemd --user`
+
+## v0.3.1 变更
+
+- 添加频道支持从当前 TG 账号已加入的频道直接选择
+- 自动过滤已添加的频道，私有频道回退数字 ID
+- 保留手动输入方式
 
 ## v0.3.0 变更
 

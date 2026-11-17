@@ -37,7 +37,7 @@ const views = {
   logs: ['运行日志', '查看扫描记录，快速定位需要处理的问题。'],
   connections: ['连接设置', '管理 Telegram 授权和 Emby 刷新通知。']
 };
-const state = { status: null, channels: [], online: false, pending: '', refresh: null, view: 'overview', codeSent: false, passwordNeeded: false, loginExpanded: false, deleting: null, logs: [], logCursor: 0, logBusy: false, signatures: {}, toastTimer: null };
+const state = { status: null, channels: [], online: false, pending: '', refresh: null, view: 'overview', codeSent: false, passwordNeeded: false, loginExpanded: false, deleting: null, logs: [], logCursor: 0, logBusy: false, joinedLoaded: false, signatures: {}, toastTimer: null };
 const number = value => new Intl.NumberFormat('zh-CN').format(Number(value) || 0);
 const text = (id, value) => { $(id).textContent = value; };
 const taskBusy = () => !!(state.status?.scanning || state.status?.rebuilding || state.status?.media_server_state === 'notifying');
@@ -286,7 +286,7 @@ function controls() {
   $('scan').disabled = busy || !s?.authorized || !state.channels.length;
   $('rebuild').disabled = busy;
   text('scan-label', taskBusy() ? '同步进行中' : state.pending === 'scan' ? '正在启动…' : '扫描并更新');
-  ['add-submit', 'show-add'].forEach(id => { $(id).disabled = busy || !s?.authorized; });
+  ['add-submit', 'show-add', 'load-joined', 'add-joined', 'joined-select'].forEach(id => { $(id).disabled = busy || !s?.authorized; });
   $('channel-ref').disabled = busy || !s?.authorized;
   $('send-code').disabled = busy || !s?.has_credentials;
   $('login-submit').disabled = busy || !state.codeSent;
@@ -350,8 +350,43 @@ $('confirm-delete').addEventListener('click', async () => {
     closeDelete(); notify('频道与索引已移除，请重建媒体树。'); $('show-add').focus();
   } catch (error) { message('delete-message', error.message, 'error'); }
 });
-$('show-add').addEventListener('click', () => { $('add-panel').hidden = false; $('channel-ref').focus(); });
+$('show-add').addEventListener('click', () => { $('add-panel').hidden = false; $('channel-ref').focus(); loadJoinedChannels(); });
 $('close-add').addEventListener('click', () => { $('add-panel').hidden = true; $('show-add').focus(); });
+async function loadJoinedChannels(force = false) {
+  if (state.joinedLoaded && !force) return;
+  if (!state.status?.authorized) { message('joined-message', '请先在连接设置完成 Telegram 登录。', 'error'); return; }
+  message('joined-message', '正在读取已加入的频道…');
+  try {
+    const list = await api('/api/telegram/channels');
+    const existing = new Set(state.channels.map(c => String(c.id)));
+    const items = (Array.isArray(list) ? list : []).filter(c => !existing.has(String(c.id)));
+    const select = $('joined-select');
+    select.replaceChildren();
+    items.forEach(ch => {
+      const option = element('option', '', `${ch.title}${ch.username ? ` @${ch.username}` : ''}`);
+      option.value = ch.ref;
+      select.append(option);
+    });
+    state.joinedLoaded = true;
+    $('joined-box').hidden = items.length === 0;
+    message('joined-message', items.length ? `找到 ${items.length} 个未添加的频道，选择后点击添加。` : '没有可添加的新频道。', items.length ? 'success' : 'active');
+  } catch (error) {
+    state.joinedLoaded = false;
+    message('joined-message', error.message, 'error');
+  }
+}
+$('load-joined').addEventListener('click', () => loadJoinedChannels(true));
+$('add-joined').addEventListener('click', async () => {
+  const ref = $('joined-select').value;
+  if (!ref) { message('joined-message', '请先选择一个频道。', 'error'); return; }
+  message('joined-message', '正在添加频道…');
+  try {
+    const result = await mutate('add-joined', '/api/channels', { ref });
+    message('joined-message', result.warning || `已添加 ${result.title || ref}，媒体库已同步。`, result.warning ? 'error' : 'success');
+    state.joinedLoaded = false;
+    await loadJoinedChannels(true);
+  } catch (error) { message('joined-message', error.message, 'error'); }
+});
 $('add-form').addEventListener('submit', async event => {
   event.preventDefault(); const ref = $('channel-ref').value.trim(); if (!ref) return;
   message('add-message', '正在解析频道…');

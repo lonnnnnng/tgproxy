@@ -109,6 +109,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("POST /api/credentials", s.handleCredentials)
 	s.mux.HandleFunc("GET /api/status", s.handleStatus)
 	s.mux.HandleFunc("GET /api/channels", s.handleChannels)
+	s.mux.HandleFunc("GET /api/telegram/channels", s.handleJoinedChannels)
 	s.mux.HandleFunc("POST /api/channels", s.handleAddChannel)
 	s.mux.HandleFunc("DELETE /api/channels/{ref}", s.handleDeleteChannel)
 	s.mux.HandleFunc("POST /api/channels/{id}/scan", s.handleScanChannel)
@@ -364,6 +365,21 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleChannels(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, s.deps.Store.ListChannels())
+}
+
+func (s *Server) handleJoinedChannels(w http.ResponseWriter, r *http.Request) {
+	if !s.connected() {
+		httpError(w, 503, "Telegram 未连接，请先登录或等待重连")
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 25*time.Second)
+	defer cancel()
+	list, err := s.tg().JoinedChannels(ctx)
+	if err != nil {
+		httpError(w, 500, "读取已加入频道失败: "+err.Error())
+		return
+	}
+	writeJSON(w, list)
 }
 
 func (s *Server) handleAddChannel(w http.ResponseWriter, r *http.Request) {
