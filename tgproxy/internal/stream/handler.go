@@ -17,6 +17,20 @@ type Source interface {
 	Resolve(ctx context.Context, file string) (ChunkSource, int64, string, error)
 }
 
+// MediaInfo identifies the Telegram source behind a stream key.
+type MediaInfo struct {
+	Channel   string
+	ChannelID int64
+	MessageID int
+	Resource  string
+	TGURL     string
+}
+
+// Describer optionally exposes the Telegram source for logs.
+type Describer interface {
+	Describe(file string) MediaInfo
+}
+
 // Handler serves files with full HTTP Range support on top of Cache.
 func (c *Cache) Handler(src Source) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -33,7 +47,16 @@ func (c *Cache) Handler(src Source) http.Handler {
 		if len(ua) > 80 {
 			ua = ua[:80] + "…"
 		}
-		c.log("info", "收到播放请求 file=%s method=%s range=%q ip=%s ua=%q", file, r.Method, r.Header.Get("Range"), r.RemoteAddr, ua)
+		scheme := "http"
+		if r.TLS != nil {
+			scheme = "https"
+		}
+		playURL := scheme + "://" + r.Host + "/stream/" + file
+		info := MediaInfo{}
+		if d, ok := src.(Describer); ok {
+			info = d.Describe(file)
+		}
+		c.log("info", "收到播放请求 url=%s channel=%q channel_id=%d message_id=%d resource=%q tg_url=%q file=%s method=%s range=%q ip=%s ua=%q", playURL, info.Channel, info.ChannelID, info.MessageID, info.Resource, info.TGURL, file, r.Method, r.Header.Get("Range"), r.RemoteAddr, ua)
 		if file == "" {
 			http.Error(w, "missing file", 400)
 			return
@@ -76,7 +99,7 @@ func (c *Cache) Handler(src Source) http.Handler {
 			return
 		}
 		if partial && start > 0 {
-			c.log("info", "seek file=%s start=%d end=%d size=%d", file, start, end, size)
+			c.log("info", "seek channel=%q resource=%q file=%s start=%d end=%d size=%d", info.Channel, info.Resource, file, start, end, size)
 		}
 		// long: 有限 Range 只预取本次请求覆盖的块，探测文件头和尾部时不浪费后续下载带宽。
 		sub.ahead.limit = end + 1

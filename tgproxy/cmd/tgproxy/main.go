@@ -79,7 +79,26 @@ func main() {
 	defer cache.Close()
 	app := &application{cfg: cfg, dataDir: *dataDir, ctx: rootCtx}
 	app.client = telegram.New(cfg.AppID, cfg.AppHash, *dataDir)
-	rawSource := keySource{resolve: func(ctx context.Context, file string) (stream.ChunkSource, int64, string, error) {
+	describe := func(file string) stream.MediaInfo {
+		ch, msg, err := parseStreamKey(file)
+		if err != nil {
+			return stream.MediaInfo{}
+		}
+		item, ok := lib.FindItem(ch, msg)
+		if !ok {
+			return stream.MediaInfo{ChannelID: ch, MessageID: msg}
+		}
+		title, ref := "", ""
+		for _, c := range lib.ListChannels() {
+			if c.ID == ch {
+				title, ref = c.Title, c.Ref
+				break
+			}
+		}
+		tgURL := telegramMessageURL(ref, msg)
+		return stream.MediaInfo{Channel: title, ChannelID: ch, MessageID: msg, Resource: item.Name, TGURL: tgURL}
+	}
+	rawSource := keySource{describe: describe, resolve: func(ctx context.Context, file string) (stream.ChunkSource, int64, string, error) {
 		ch, msg, err := parseStreamKey(file)
 		if err != nil {
 			return nil, 0, "", stream.ErrNotFound
@@ -105,7 +124,7 @@ func main() {
 	app.resolved = resolved
 	defer resolved.Close()
 	// long: 每次请求仍核对索引，删除频道后即刻停用旧入口；仅复用 Telegram 文件句柄。
-	src := keySource{invalidate: func(file string) {
+	src := keySource{describe: describe, invalidate: func(file string) {
 		ch, msg, err := parseStreamKey(file)
 		if err == nil {
 			resolved.Invalidate(fmt.Sprintf("%d_%d", ch, msg))
@@ -212,11 +231,40 @@ func parseStreamKey(file string) (int64, int, error) {
 // keySource adapts a resolve func to stream.Source.
 type keySource struct {
 	invalidate func(string)
+	describe   func(string) stream.MediaInfo
 	resolve    func(context.Context, string) (stream.ChunkSource, int64, string, error)
 }
 
 func (k keySource) Resolve(ctx context.Context, file string) (stream.ChunkSource, int64, string, error) {
 	return k.resolve(ctx, file)
+}
+
+func (k keySource) Describe(file string) stream.MediaInfo {
+	if k.describe == nil {
+		return stream.MediaInfo{}
+	}
+	return k.describe(file)
+}
+
+func telegramMessageURL(ref string, msgID int) string {
+	ref = strings.TrimSpace(ref)
+	var base string
+	switch {
+	case strings.HasPrefix(ref, "@"):
+		base = "https://t.me/" + strings.TrimPrefix(ref, "@")
+	case strings.Contains(ref, "t.me/"):
+		base = ref
+		if i := strings.Index(base, "t.me/"); i >= 0 {
+			base = "https://t.me/" + strings.TrimPrefix(base[i+len("t.me/"):], "/")
+		}
+	default:
+		return ""
+	}
+	base = strings.TrimRight(base, "/")
+	if base == "" {
+		return ""
+	}
+	return fmt.Sprintf("%s/%d", base, msgID)
 }
 
 func mimeOf(it store.Item) string {

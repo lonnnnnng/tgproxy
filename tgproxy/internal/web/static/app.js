@@ -205,6 +205,12 @@ function renderChannels() {
   renderTable('channel-list', channels, true); text('filter-result', `显示 ${number(channels.length)} / ${number(state.channels.length)} 个频道`);
   $('channel-lock').hidden = !taskBusy();
 }
+function logTime(value) {
+  const d = new Date(value);
+  if (Number.isNaN(d.getTime())) return '—';
+  const pad = (n, width = 2) => String(n).padStart(width, '0');
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}.${pad(d.getMilliseconds(), 3)}`;
+}
 function logLevel(entry) { return ({ error: 'error', warn: 'warning', success: 'success', info: 'info' })[entry?.level] || 'info'; }
 function exportText() { return [...state.logs.map(e => `${e.time} [${e.level}] ${e.message}`), ...(state.status?.last_error ? ['\n最近一次错误：', state.status.last_error] : [])].join('\n'); }
 async function refreshLogs() {
@@ -242,10 +248,8 @@ function renderLogs() {
       const fragment = document.createDocumentFragment();
       visible.forEach(entry => {
         const row = element('div', 'log-row');
-        const time = new Date(entry.time);
-        const hhmmss = Number.isNaN(time.getTime()) ? '--:--:--' : time.toLocaleTimeString('zh-CN', { hour12: false });
         const level = logLevel(entry);
-        row.append(element('span', 'log-index', hhmmss), badge(({ error: '错误', warning: '警告', success: '成功', info: '信息' })[level], level), element('p', '', entry.message));
+        row.append(element('span', 'log-index', logTime(entry.time)), badge(({ error: '错误', warning: '警告', success: '成功', info: '信息' })[level], level), element('p', '', entry.message));
         fragment.append(row);
       });
       list.replaceChildren(fragment);

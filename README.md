@@ -6,10 +6,16 @@ tgproxy 负责索引、媒体树和稳定的 Range 读取；视频浏览、元�
 
 ## 当前版本
 
-- 最新发行版：[v0.2.1](https://github.com/lonnnnnng/tgproxy/releases/tag/v0.2.1)
+- 最新发行版：[v0.2.2](https://github.com/lonnnnnng/tgproxy/releases/tag/v0.2.2)
 - 线上控制台：[http://192.168.1.2:8080/](http://192.168.1.2:8080/)
 - 线上 Emby：[http://192.168.1.2:8096/](http://192.168.1.2:8096/)
 - 当前部署方式：Linux/amd64 静态二进制 + `systemd --user`
+
+## v0.2.2 变更
+
+- 播放日志增加完整本地播放 URL、TG 频道标题/ID、消息 ID、资源名和公开频道链接
+- 日志时间改为 `YYYY-MM-DD HH:mm:ss.SSS`，修正日志行栅格与窄屏布局
+- Emby 媒体库补齐元数据/图片提供器配置后，封面与简介可正常刮削
 
 ## v0.2.1 变更
 

@@ -201,8 +201,8 @@ label { display: block; font-size: 12px; font-weight: 550; margin-bottom: 7px; }
 .section-note { display: flex; align-items: start; gap: 8px; color: var(--muted); font-size: 12px; margin: 18px 4px; }
 .section-note svg { width: 16px; height: 16px; }
 .log-list { max-height: 540px; overflow: auto; }
-.log-row { display: grid; grid-template-columns: 32px 55px minmax(0,1fr); align-items: start; gap: 12px; padding: 12px 24px; border-top: 1px solid var(--line); font-size: 12px; }
-.log-index { color: var(--muted); font-variant-numeric: tabular-nums; }
+.log-row { display: grid; grid-template-columns: 176px 58px minmax(0,1fr); align-items: start; gap: 12px; padding: 12px 24px; border-top: 1px solid var(--line); font-size: 12px; }
+.log-index { color: var(--muted); font-variant-numeric: tabular-nums; white-space: nowrap; }
 .log-row p { white-space: pre-wrap; overflow-wrap: anywhere; font-family: ui-monospace, SFMono-Regular, Consolas, monospace; }
 .error-panel { margin-top: 20px; padding: 20px 24px; }
 .error-panel h2 { color: var(--red); }
@@ -332,7 +332,10 @@ dialog h2 { font-size: 20px; }
   .settings-panel .input-action { flex-wrap: wrap; }
   .settings-panel .input-action input { flex-basis: 100%; }
   .appearance-panel { align-items: start; flex-direction: column; padding: 20px; }
-  .log-row { padding: 12px 16px; gap: 8px; grid-template-columns: 24px 45px minmax(0,1fr); }
+  .log-row { padding: 12px 16px; gap: 8px 10px; grid-template-columns: minmax(0,1fr) auto; }
+  .log-row .log-index { grid-column: 1; grid-row: 1; }
+  .log-row .badge { grid-column: 2; grid-row: 1; justify-self: end; }
+  .log-row p { grid-column: 1 / -1; grid-row: 2; }
   .page-footer { flex-direction: column; gap: 4px; }
   .toast { left: 50%; width: max-content; bottom: 16px; }
 }

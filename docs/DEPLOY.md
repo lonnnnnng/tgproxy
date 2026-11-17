@@ -98,6 +98,16 @@ Emby 以 systemd 服务运行，直接读取宿主机目录，无需容器挂载
 - 已启用实时监控
 - 转码已禁用：`HardwareAccelerationType=none`、`EnableHardwareEncoding=false`，用户策略关闭视频/音频转码
 
+### 元数据与封面
+
+媒体库必须配置元数据/图片提供器，否则 Emby 不会刮削封面：
+
+- 语言：`zh-CN`；国家：`CN`
+- Series：`TheTVDB` + `TheMovieDb`，图片 `TheTVDB` + `FanArt`
+- Season/Episode：`TheTVDB`
+
+可在 Emby 媒体库设置里配置，或参考同服务器上已有正常库的 `LibraryOptions` 复制 `TypeOptions`。目录名缺少年份/外部 ID、特别篇（S01E00）等条目可能仍然匹配失败。
+
 ### 权限
 
 `/home/lee` 为 `750 lee:lee`，Emby 以 `emby` 用户运行，需要显式授权：
