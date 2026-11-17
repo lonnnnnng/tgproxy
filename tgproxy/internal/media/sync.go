@@ -59,30 +59,45 @@ func safePath(root, rel string) (string, error) {
 	return p, nil
 }
 func planTree(groups []Group, base string) (map[string]string, int, error) {
-	files := map[string]string{}
-	titles := map[string]string{}
+	type scope struct {
+		titles  map[string]string
+		folders map[string]map[string]bool
+	}
+	scopes := map[string]*scope{}
 	for _, g := range groups {
+		sc := scopes[g.ChannelDir]
+		if sc == nil {
+			sc = &scope{titles: map[string]string{}, folders: map[string]map[string]bool{}}
+			scopes[g.ChannelDir] = sc
+		}
 		k := normalizeTitle(g.Title)
-		if old, ok := titles[k]; !ok || g.Title < old {
-			titles[k] = g.Title
+		if old, ok := sc.titles[k]; !ok || g.Title < old {
+			sc.titles[k] = g.Title
 		}
 	}
-	folders := map[string]map[string]bool{}
-	for key, title := range titles {
-		dir := strings.ToLower(SanitizeDirName(title))
-		if folders[dir] == nil {
-			folders[dir] = map[string]bool{}
+	for _, sc := range scopes {
+		for key, title := range sc.titles {
+			dir := strings.ToLower(SanitizeDirName(title))
+			if sc.folders[dir] == nil {
+				sc.folders[dir] = map[string]bool{}
+			}
+			sc.folders[dir][key] = true
 		}
-		folders[dir][key] = true
 	}
+	files := map[string]string{}
 	count := 0
 	for _, g := range groups {
-		title := titles[normalizeTitle(g.Title)]
+		sc := scopes[g.ChannelDir]
+		title := sc.titles[normalizeTitle(g.Title)]
 		dir := SanitizeDirName(title)
-		if len(folders[strings.ToLower(dir)]) > 1 {
+		if len(sc.folders[strings.ToLower(dir)]) > 1 {
 			dir += "-" + digest([]byte(normalizeTitle(g.Title)))[:8]
 		}
-		files[filepath.Join(dir, "tvshow.nfo")] = fmt.Sprintf("<tvshow><title>%s</title></tvshow>", xmlEscape(title))
+		prefix := ""
+		if g.ChannelDir != "" {
+			prefix = SanitizeDirName(g.ChannelDir)
+		}
+		files[filepath.Join(prefix, dir, "tvshow.nfo")] = fmt.Sprintf("<tvshow><title>%s</title></tvshow>", xmlEscape(title))
 		counts := map[int]int{}
 		for _, ef := range g.Episodes {
 			counts[ef.Episode]++
@@ -93,7 +108,7 @@ func planTree(groups []Group, base string) (map[string]string, int, error) {
 				suffix = " - " + ef.StreamKey
 			}
 			name := fmt.Sprintf("%s S%02dE%02d%s.strm", SanitizeDirName(title), g.Season, ef.Episode, suffix)
-			rel := filepath.Join(dir, fmt.Sprintf("Season %02d", g.Season), name)
+			rel := filepath.Join(prefix, dir, fmt.Sprintf("Season %02d", g.Season), name)
 			if _, ok := files[rel]; ok {
 				return nil, 0, fmt.Errorf("媒体输出路径冲突: %s", rel)
 			}

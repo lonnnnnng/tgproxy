@@ -31,6 +31,8 @@ type Config struct {
 	PrefetchChunks    int    `json:"prefetch_chunks"` // sequential prefetch count
 	MediaServerURL    string `json:"media_server_url,omitempty"`
 	MediaServerAPIKey string `json:"media_server_api_key,omitempty"`
+	AutoScanEnabled   bool   `json:"auto_scan_enabled,omitempty"`
+	AutoScanMinutes   int    `json:"auto_scan_minutes,omitempty"`
 }
 
 func Defaults() *Config {
@@ -112,6 +114,9 @@ func (c *Config) Validate() error {
 	}
 	if (c.MediaServerURL == "") != (c.MediaServerAPIKey == "") {
 		return fmt.Errorf("media_server_url 和 media_server_api_key 必须同时配置")
+	}
+	if c.AutoScanEnabled && (c.AutoScanMinutes < 1 || c.AutoScanMinutes > 1440) {
+		return fmt.Errorf("auto_scan_minutes 必须在 1～1440 之间")
 	}
 	return nil
 }

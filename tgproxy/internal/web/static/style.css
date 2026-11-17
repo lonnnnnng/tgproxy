@@ -163,7 +163,9 @@ th:last-child { width: 10%; text-align: right; }
 .channel-copy small { display: block; color: var(--muted); font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; margin-top: 3px; }
 .video-count { font-weight: 600; text-align: right; font-variant-numeric: tabular-nums; }
 .row-action { text-align: right; }
+.row-action .icon-button { margin-left: 4px; }
 .row-action .icon-button:hover { color: var(--red); background: var(--red-soft); }
+.row-action .scan-button:hover { color: var(--accent); background: var(--accent-soft); }
 .row-action .icon-button svg { width: 16px; height: 16px; }
 .table-toolbar { padding: 20px 24px; display: flex; gap: 12px; align-items: center; }
 .search-input { position: relative; flex: 1; min-width: 0; max-width: 460px; }

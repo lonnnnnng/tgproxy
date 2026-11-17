@@ -119,9 +119,10 @@ func CleanTitle(name string) string {
 }
 
 type Group struct {
-	Title    string
-	Season   int
-	Episodes []EpisodeFile
+	ChannelDir string
+	Title      string
+	Season     int
+	Episodes   []EpisodeFile
 }
 type EpisodeFile struct {
 	Episode         int
@@ -129,10 +130,11 @@ type EpisodeFile struct {
 	Size            int64
 }
 type Item struct {
-	ChannelID int64
-	MessageID int
-	Name      string
-	Size      int64
+	ChannelID  int64
+	MessageID  int
+	Name       string
+	Size       int64
+	ChannelDir string
 }
 
 func Key(ch int64, msg int) string   { return fmt.Sprintf("%d_%d", ch, msg) }
@@ -156,13 +158,14 @@ func Classify(items []Item) []Group {
 	for _, it := range input {
 		if IsVideo(it.Name) {
 			if _, ok := ParseEpisode(it.Name); !ok {
-				standalone[normalizeTitle(CleanTitle(it.Name))]++
+				standalone[it.ChannelDir+"\x00"+normalizeTitle(CleanTitle(it.Name))]++
 			}
 		}
 	}
 	type groupKey struct {
-		title  string
-		season int
+		channelDir string
+		title      string
+		season     int
 	}
 	groups := map[groupKey]*Group{}
 	seen := map[string]bool{}
@@ -179,13 +182,13 @@ func Classify(items []Item) []Group {
 		title := CleanTitle(it.Name)
 		if !readable(title) {
 			title = "未命名视频 " + key
-		} else if !ok && standalone[normalizeTitle(title)] > 1 {
+		} else if !ok && standalone[it.ChannelDir+"\x00"+normalizeTitle(title)] > 1 {
 			title += " [" + key + "]"
 		}
-		k := groupKey{normalizeTitle(title), ep.Season}
+		k := groupKey{it.ChannelDir, normalizeTitle(title), ep.Season}
 		g := groups[k]
 		if g == nil {
-			g = &Group{Title: title, Season: ep.Season}
+			g = &Group{ChannelDir: it.ChannelDir, Title: title, Season: ep.Season}
 			groups[k] = g
 		}
 		g.Episodes = append(g.Episodes, EpisodeFile{ep.Episode, key, it.Name, it.Size})
@@ -202,6 +205,9 @@ func Classify(items []Item) []Group {
 		out = append(out, *g)
 	}
 	sort.Slice(out, func(i, j int) bool {
+		if out[i].ChannelDir != out[j].ChannelDir {
+			return out[i].ChannelDir < out[j].ChannelDir
+		}
 		if out[i].Title == out[j].Title {
 			return out[i].Season < out[j].Season
 		}

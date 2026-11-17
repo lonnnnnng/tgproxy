@@ -9,7 +9,7 @@ import (
 )
 
 func TestClassifyPreservesSourcesAndGroupsEpisodeFormats(t *testing.T) {
-	items := []Item{{1, 1, "剧名 01.mp4", 1}, {2, 2, "剧名(02).mkv", 1}, {3, 3, "[来源]剧名 第03集 @source.mp4", 1}, {4, 4, "预告.mp4", 1}, {4, 5, "预告.mp4", 1}, {5, 6, "_.mp4", 1}, {6, 7, "剧名 S00E01.mp4", 1}, {7, 8, "剧名 第2季 第01集.mp4", 1}}
+	items := []Item{{1, 1, "剧名 01.mp4", 1, ""}, {2, 2, "剧名(02).mkv", 1, ""}, {3, 3, "[来源]剧名 第03集 @source.mp4", 1, ""}, {4, 4, "预告.mp4", 1, ""}, {4, 5, "预告.mp4", 1, ""}, {5, 6, "_.mp4", 1, ""}, {6, 7, "剧名 S00E01.mp4", 1, ""}, {7, 8, "剧名 第2季 第01集.mp4", 1, ""}}
 	groups := Classify(items)
 	files, n, err := planTree(groups, "http://host")
 	if err != nil || n != len(items) {
@@ -43,7 +43,7 @@ func TestClassifyPreservesSourcesAndGroupsEpisodeFormats(t *testing.T) {
 
 func TestTreeSyncBacksUpStaleFilesAndKeepsRoot(t *testing.T) {
 	root := filepath.Join(t.TempDir(), "media")
-	items := []Item{{1, 1, "剧名 S01E01.mp4", 1}, {2, 2, "剧名 S01E01.mp4", 2}}
+	items := []Item{{1, 1, "剧名 S01E01.mp4", 1, ""}, {2, 2, "剧名 S01E01.mp4", 2, ""}}
 	if n, err := BuildTree(root, Classify(items), "http://host", 1); err != nil || n != 2 {
 		t.Fatalf("%d %v", n, err)
 	}
@@ -76,7 +76,7 @@ func TestTreeRejectsSymlinksAndForeignConflicts(t *testing.T) {
 	if err := os.Symlink(outside, filepath.Join(root, "剧名")); err != nil {
 		t.Fatal(err)
 	}
-	g := Classify([]Item{{1, 1, "剧名 S01E01.mp4", 1}})
+	g := Classify([]Item{{1, 1, "剧名 S01E01.mp4", 1, ""}})
 	if _, err := BuildTree(root, g, "http://host"); err == nil {
 		t.Fatal("followed symlink")
 	}
@@ -107,7 +107,7 @@ func TestResolutionIsNotAnEpisodeAndSeasonCaseIsStable(t *testing.T) {
 			t.Fatalf("%s parsed as %+v", name, ep)
 		}
 	}
-	groups := Classify([]Item{{1, 1, "Show S01E01.mp4", 1}, {2, 2, "show S02E01.mp4", 1}})
+	groups := Classify([]Item{{1, 1, "Show S01E01.mp4", 1, ""}, {2, 2, "show S02E01.mp4", 1, ""}})
 	root := t.TempDir()
 	for i := 0; i < 2; i++ {
 		if n, err := BuildTree(root, groups, "http://host"); n != 2 || err != nil {
@@ -126,5 +126,27 @@ func TestResolutionIsNotAnEpisodeAndSeasonCaseIsStable(t *testing.T) {
 	}
 	if dirs != 1 {
 		t.Fatalf("same show split by case: %d", dirs)
+	}
+}
+
+func TestClassifySeparatesChannels(t *testing.T) {
+	groups := Classify([]Item{
+		{1, 1, "剧名 S01E01.mp4", 1, "频道A [1]"},
+		{2, 2, "剧名 S01E01.mp4", 1, "频道B [2]"},
+	})
+	if len(groups) != 2 {
+		t.Fatalf("groups=%d", len(groups))
+	}
+	files, n, err := planTree(groups, "http://host")
+	if err != nil || n != 2 {
+		t.Fatalf("n=%d err=%v", n, err)
+	}
+	for _, rel := range []string{
+		filepath.Join("频道A [1]", "剧名", "Season 01", "剧名 S01E01.strm"),
+		filepath.Join("频道B [2]", "剧名", "Season 01", "剧名 S01E01.strm"),
+	} {
+		if _, ok := files[rel]; !ok {
+			t.Fatalf("missing %s in %v", rel, files)
+		}
 	}
 }

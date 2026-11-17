@@ -27,7 +27,7 @@ func TestLibraryFixture(t *testing.T) {
 	var items []Item
 	keys := map[string]bool{}
 	for _, it := range fixture.Items {
-		items = append(items, Item{it.ChannelID, it.MessageID, it.Name, it.Size})
+		items = append(items, Item{it.ChannelID, it.MessageID, it.Name, it.Size, ""})
 		if IsVideo(it.Name) {
 			keys[Key(it.ChannelID, it.MessageID)] = true
 		}

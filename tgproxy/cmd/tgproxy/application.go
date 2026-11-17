@@ -137,6 +137,24 @@ func (a *application) saveMediaServer(url, key string) error {
 	return nil
 }
 
+func (a *application) autoScan() (bool, int) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.cfg.AutoScanEnabled, a.cfg.AutoScanMinutes
+}
+
+func (a *application) saveAutoScan(enabled bool, minutes int) error {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	next := *a.cfg
+	next.AutoScanEnabled, next.AutoScanMinutes = enabled, minutes
+	if err := config.Save(a.dataDir, &next); err != nil {
+		return err
+	}
+	a.cfg = &next
+	return nil
+}
+
 func (a *application) close() {
 	a.mu.Lock()
 	defer a.mu.Unlock()

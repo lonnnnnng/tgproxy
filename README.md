@@ -6,10 +6,18 @@ tgproxy 负责索引、媒体树和稳定的 Range 读取；视频浏览、元�
 
 ## 当前版本
 
-- 最新发行版：[v0.2.3](https://github.com/lonnnnnng/tgproxy/releases/tag/v0.2.3)
+- 最新发行版：[v0.3.0](https://github.com/lonnnnnng/tgproxy/releases/tag/v0.3.0)
 - 线上控制台：[http://192.168.1.2:8080/](http://192.168.1.2:8080/)
 - 线上 Emby：[http://192.168.1.2:8096/](http://192.168.1.2:8096/)
 - 当前部署方式：Linux/amd64 静态二进制 + `systemd --user`
+
+## v0.3.0 变更
+
+- 媒体树按 TG 频道分组：`频道/剧名/Season/...`
+- 添加频道自动创建对应的 Emby 媒体库；删除频道自动删除媒体库与媒体目录
+- 新增定时自动扫描，可配置间隔分钟数
+- 新增每个频道单独的扫描按钮，保留全量扫描按钮
+- Emby 新库自动配置 TVDB/TMDB/FanArt 元数据与中文语言
 
 ## v0.2.3 变更
 

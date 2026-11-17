@@ -11,10 +11,12 @@ import (
 
 // Channel is a Telegram media source channel.
 type Channel struct {
-	ID    int64  `json:"id"`    // telegram peer id (channel id, -100 prefixed form kept raw)
-	Ref   string `json:"ref"`   // user-entered reference: @name, t.me link, or numeric id
-	Title string `json:"title"` // resolved title, filled after sync
-	Added bool   `json:"added"` // has been resolved & indexed
+	ID          int64  `json:"id"`                     // telegram peer id (channel id, -100 prefixed form kept raw)
+	Ref         string `json:"ref"`                    // user-entered reference: @name, t.me link, or numeric id
+	Title       string `json:"title"`                  // resolved title, filled after sync
+	Dir         string `json:"dir,omitempty"`          // media/library directory under MediaDir
+	LibraryName string `json:"library_name,omitempty"` // Emby library name
+	Added       bool   `json:"added"`                  // has been resolved & indexed
 }
 
 // Item is one media message indexed from a channel.
@@ -107,6 +109,28 @@ func (l *Library) UpsertChannel(c Channel) error {
 		}
 	}
 	return l.commitLocked(append(channels, c), l.Items)
+}
+
+func (l *Library) ChannelByRef(ref string) (Channel, bool) {
+	l.mu.RLock()
+	defer l.mu.RUnlock()
+	for _, c := range l.Channels {
+		if c.Ref == ref {
+			return c, true
+		}
+	}
+	return Channel{}, false
+}
+
+func (l *Library) ChannelByID(id int64) (Channel, bool) {
+	l.mu.RLock()
+	defer l.mu.RUnlock()
+	for _, c := range l.Channels {
+		if c.ID == id {
+			return c, true
+		}
+	}
+	return Channel{}, false
 }
 
 func (l *Library) RemoveChannel(ref string) (bool, error) {

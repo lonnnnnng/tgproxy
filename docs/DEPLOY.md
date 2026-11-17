@@ -93,9 +93,10 @@ Emby 以 systemd 服务运行，直接读取宿主机目录，无需容器挂载
 
 ### 媒体库
 
-- 库名：**TG频道**，类型 tvshows
-- 路径：`/home/lee/tgproxy/media`
-- 已启用实时监控
+- 每个 TG 频道一个 tvshows 库，库名使用频道标题，路径为 `/home/lee/tgproxy/media/<频道目录>`
+- 添加/删除频道时 tgproxy 自动创建/删除对应库
+- 媒体树结构：`频道/剧名/Season/...`
+- 新库自动配置 TVDB/TMDB/FanArt、`zh-CN`、`CN`
 - 转码已禁用：`HardwareAccelerationType=none`、`EnableHardwareEncoding=false`，用户策略关闭视频/音频转码
 
 ### 元数据与封面

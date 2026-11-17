@@ -8,6 +8,8 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -32,6 +34,10 @@ type Deps struct {
 	MediaServer func() (string, string)
 	// SaveMediaServer persists the Emby base URL and API key.
 	SaveMediaServer func(url, key string) error
+	// AutoScan returns the scheduled scan state (enabled, minutes).
+	AutoScan func() (bool, int)
+	// SaveAutoScan persists the scheduled scan state.
+	SaveAutoScan func(enabled bool, minutes int) error
 	// TestMediaServer is an optional test hook for refresh notifications.
 	TestMediaServer func(context.Context, string, string) error
 	// Logs is the shared in-memory log buffer for the console.
@@ -88,6 +94,9 @@ func NewServer(deps Deps) *Server {
 	}
 	s := &Server{deps: deps, mux: http.NewServeMux(), scanProgress: make(map[int64]channelScanProgress)}
 	s.routes()
+	if deps.AutoScan != nil {
+		go s.autoScanLoop()
+	}
 	return s
 }
 
@@ -102,11 +111,14 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /api/channels", s.handleChannels)
 	s.mux.HandleFunc("POST /api/channels", s.handleAddChannel)
 	s.mux.HandleFunc("DELETE /api/channels/{ref}", s.handleDeleteChannel)
+	s.mux.HandleFunc("POST /api/channels/{id}/scan", s.handleScanChannel)
 	s.mux.HandleFunc("POST /api/scan", s.handleScan)
 	s.mux.HandleFunc("POST /api/rebuild", s.handleRebuild)
 	s.mux.HandleFunc("GET /api/logs", s.handleLogs)
 	s.mux.HandleFunc("GET /api/media-server", s.handleGetMediaServer)
 	s.mux.HandleFunc("POST /api/media-server", s.handleSaveMediaServer)
+	s.mux.HandleFunc("GET /api/auto-scan", s.handleGetAutoScan)
+	s.mux.HandleFunc("POST /api/auto-scan", s.handleSaveAutoScan)
 }
 
 func (s *Server) Handler() http.Handler {
@@ -327,6 +339,10 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 	hasCreds := s.deps.HasCredentials == nil || s.deps.HasCredentials()
 	mediaURL, mediaKey := s.mediaServerConfig()
 	mediaConfigured := mediaURL != "" && mediaKey != ""
+	autoEnabled, autoMinutes := false, 0
+	if s.deps.AutoScan != nil {
+		autoEnabled, autoMinutes = s.deps.AutoScan()
+	}
 	if !mediaConfigured {
 		mediaState = "not_configured"
 		if mediaMessage == "" {
@@ -342,6 +358,7 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 		"needs_rebuild": !hasTree || built != rev, "active_channel_id": activeChannelID, "scan_progress": scanProgress,
 		"channel_video_counts": channelVideoCounts, "media_server_configured": mediaConfigured, "media_server_state": mediaState,
 		"media_server_message": mediaMessage, "media_server_updated_at": mediaUpdated, "media_server_url": mediaURL, "strm_files": strmFiles, "strm_files_known": strmFilesKnown,
+		"auto_scan_enabled": autoEnabled, "auto_scan_minutes": autoMinutes,
 	})
 }
 
@@ -373,11 +390,63 @@ func (s *Server) handleAddChannel(w http.ResponseWriter, r *http.Request) {
 		httpError(w, 400, "resolve failed: "+err.Error())
 		return
 	}
-	if err := s.deps.Store.UpsertChannel(store.Channel{ID: id, Ref: strings.TrimSpace(req.Ref), Title: title, Added: true}); err != nil {
+	dir := fmt.Sprintf("%s [%d]", media.SanitizeDirName(title), id)
+	if media.SanitizeDirName(title) == "" {
+		dir = fmt.Sprintf("频道 [%d]", id)
+	}
+	library := title
+	for _, c := range s.deps.Store.ListChannels() {
+		if c.Title == title && c.ID != id {
+			library = fmt.Sprintf("%s [%d]", title, id)
+			break
+		}
+	}
+	ch := store.Channel{ID: id, Ref: strings.TrimSpace(req.Ref), Title: title, Dir: dir, LibraryName: library, Added: true}
+	if err := s.deps.Store.UpsertChannel(ch); err != nil {
 		httpError(w, 500, "保存频道失败: "+err.Error())
 		return
 	}
-	writeJSON(w, map[string]any{"ok": true, "id": id, "title": title})
+	ctx2, cancel2 := context.WithTimeout(context.Background(), 20*time.Second)
+	err = s.ensureChannelLibrary(ctx2, ch)
+	cancel2()
+	result := map[string]any{"ok": true, "id": id, "title": title}
+	if err != nil {
+		s.logf("error", "创建媒体库失败：%v", err)
+		result["warning"] = "频道已添加，但创建媒体库失败：" + err.Error()
+	}
+	writeJSON(w, result)
+}
+
+func (s *Server) ensureChannelLibrary(ctx context.Context, ch store.Channel) error {
+	url, key := s.mediaServerConfig()
+	if url == "" || key == "" {
+		return nil
+	}
+	if ch.Dir == "" {
+		return nil
+	}
+	path := filepath.Join(s.deps.MediaDir, ch.Dir)
+	if err := os.MkdirAll(path, 0o755); err != nil {
+		return err
+	}
+	if err := mediaserver.EnsureLibrary(ctx, url, key, ch.LibraryName, path); err != nil {
+		return err
+	}
+	s.logf("success", "已创建/配置媒体库 %q → %s", ch.LibraryName, path)
+	return nil
+}
+
+func (s *Server) deleteChannelLibrary(ctx context.Context, ch store.Channel) error {
+	url, key := s.mediaServerConfig()
+	if url == "" || key == "" || ch.Dir == "" {
+		return nil
+	}
+	path := filepath.Join(s.deps.MediaDir, ch.Dir)
+	if err := mediaserver.DeleteLibraryByPath(ctx, url, key, path); err != nil {
+		return err
+	}
+	s.logf("success", "已删除媒体库 %q", ch.LibraryName)
+	return nil
 }
 
 func (s *Server) handleDeleteChannel(w http.ResponseWriter, r *http.Request) {
@@ -387,6 +456,11 @@ func (s *Server) handleDeleteChannel(w http.ResponseWriter, r *http.Request) {
 	}
 	defer s.taskMu.Unlock()
 	ref := r.PathValue("ref")
+	ch, found := s.deps.Store.ChannelByRef(ref)
+	if !found {
+		httpError(w, 404, "频道不存在")
+		return
+	}
 	removed, err := s.deps.Store.RemoveChannel(ref)
 	if err != nil {
 		httpError(w, 500, "移除频道失败: "+err.Error())
@@ -396,7 +470,21 @@ func (s *Server) handleDeleteChannel(w http.ResponseWriter, r *http.Request) {
 		httpError(w, 404, "频道不存在")
 		return
 	}
-	w.Write([]byte(`{"ok":true}`))
+	ctx2, cancel2 := context.WithTimeout(context.Background(), 20*time.Second)
+	err = s.deleteChannelLibrary(ctx2, ch)
+	cancel2()
+	result := map[string]any{"ok": true}
+	if err != nil {
+		s.logf("error", "删除媒体库失败：%v", err)
+		result["warning"] = "频道已移除，但删除媒体库失败：" + err.Error()
+	}
+	if ch.Dir != "" {
+		if err := os.RemoveAll(filepath.Join(s.deps.MediaDir, ch.Dir)); err != nil {
+			s.logf("error", "删除频道媒体目录失败：%v", err)
+			result["warning"] = fmt.Sprintf("频道已移除，但删除媒体目录失败：%v", err)
+		}
+	}
+	writeJSON(w, result)
 }
 
 func (s *Server) handleScan(w http.ResponseWriter, r *http.Request) {
@@ -409,13 +497,41 @@ func (s *Server) handleScan(w http.ResponseWriter, r *http.Request) {
 		httpError(w, 400, "请先添加频道")
 		return
 	}
-	if !s.taskMu.TryLock() {
+	if !s.startScan(channels) {
 		httpError(w, 409, "扫描或重建正在执行")
 		return
 	}
+	writeJSON(w, map[string]any{"ok": true, "started": true})
+}
+
+func (s *Server) handleScanChannel(w http.ResponseWriter, r *http.Request) {
+	if !s.connected() {
+		httpError(w, 503, "Telegram 未连接，请先登录或等待重连")
+		return
+	}
+	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil {
+		httpError(w, 400, "频道 ID 无效")
+		return
+	}
+	ch, ok := s.deps.Store.ChannelByID(id)
+	if !ok {
+		httpError(w, 404, "频道不存在")
+		return
+	}
+	if !s.startScan([]store.Channel{ch}) {
+		httpError(w, 409, "扫描或重建正在执行")
+		return
+	}
+	writeJSON(w, map[string]any{"ok": true, "started": true, "id": id})
+}
+
+func (s *Server) startScan(channels []store.Channel) bool {
+	if len(channels) == 0 || !s.taskMu.TryLock() {
+		return false
+	}
 	s.mu.Lock()
 	s.scanning = true
-	s.lastErr = ""
 	s.lastErr = ""
 	s.activeChannelID = 0
 	s.scanProgress = make(map[int64]channelScanProgress, len(channels))
@@ -426,9 +542,9 @@ func (s *Server) handleScan(w http.ResponseWriter, r *http.Request) {
 	go func() {
 		defer s.taskMu.Unlock()
 		defer func() { s.mu.Lock(); s.scanning = false; s.mu.Unlock() }()
-		s.scanAll()
+		s.scanChannels(channels)
 	}()
-	writeJSON(w, map[string]any{"ok": true, "started": true})
+	return true
 }
 func (s *Server) logf(level, format string, args ...any) {
 	if s.deps.Logs != nil {
@@ -450,7 +566,7 @@ func (s *Server) updateChannelProgress(id int64, status string, videosFound int,
 	s.mu.Unlock()
 }
 
-func (s *Server) scanAll() {
+func (s *Server) scanChannels(channels []store.Channel) {
 	var failures []string
 	scan := s.deps.ScanChannel
 	if scan == nil {
@@ -465,7 +581,7 @@ func (s *Server) scanAll() {
 			})
 		}
 	}
-	for _, ch := range s.deps.Store.ListChannels() {
+	for _, ch := range channels {
 		if s.deps.Context.Err() != nil {
 			failures = append(failures, "扫描已取消")
 			break
@@ -519,9 +635,13 @@ func (s *Server) rebuild(ctx context.Context) (map[string]any, error) {
 	s.rebuilding = true
 	s.mu.Unlock()
 	rev, all := s.deps.Store.Snapshot()
+	dirs := map[int64]string{}
+	for _, ch := range s.deps.Store.ListChannels() {
+		dirs[ch.ID] = ch.Dir
+	}
 	conv := make([]media.Item, len(all))
 	for i, it := range all {
-		conv[i] = media.Item{ChannelID: it.ChannelID, MessageID: it.MessageID, Name: it.Name, Size: it.Size}
+		conv[i] = media.Item{ChannelID: it.ChannelID, MessageID: it.MessageID, Name: it.Name, Size: it.Size, ChannelDir: dirs[it.ChannelID]}
 	}
 	groups := media.Classify(conv)
 	n, err := media.BuildTree(s.deps.MediaDir, groups, s.deps.StrmBase, rev)
@@ -565,6 +685,68 @@ func (s *Server) rebuild(ctx context.Context) (map[string]any, error) {
 	}
 	return result, nil
 }
+func (s *Server) autoScanLoop() {
+	ticker := time.NewTicker(30 * time.Second)
+	defer ticker.Stop()
+	last := time.Now()
+	for {
+		select {
+		case <-s.deps.Context.Done():
+			return
+		case now := <-ticker.C:
+			if s.deps.AutoScan == nil {
+				continue
+			}
+			enabled, minutes := s.deps.AutoScan()
+			if !enabled || minutes < 1 {
+				continue
+			}
+			if now.Sub(last) < time.Duration(minutes)*time.Minute {
+				continue
+			}
+			if !s.connected() {
+				continue
+			}
+			channels := s.deps.Store.ListChannels()
+			if len(channels) == 0 {
+				continue
+			}
+			if s.startScan(channels) {
+				last = now
+				s.logf("info", "自动扫描已启动（间隔 %d 分钟）", minutes)
+			}
+		}
+	}
+}
+
+func (s *Server) handleGetAutoScan(w http.ResponseWriter, r *http.Request) {
+	enabled, minutes := false, 0
+	if s.deps.AutoScan != nil {
+		enabled, minutes = s.deps.AutoScan()
+	}
+	writeJSON(w, map[string]any{"enabled": enabled, "minutes": minutes})
+}
+
+func (s *Server) handleSaveAutoScan(w http.ResponseWriter, r *http.Request) {
+	if s.deps.SaveAutoScan == nil {
+		httpError(w, 500, "自动扫描配置不可用")
+		return
+	}
+	var req struct {
+		Enabled bool `json:"enabled"`
+		Minutes int  `json:"minutes"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		httpError(w, 400, "请求格式错误")
+		return
+	}
+	if err := s.deps.SaveAutoScan(req.Enabled, req.Minutes); err != nil {
+		httpError(w, 400, err.Error())
+		return
+	}
+	writeJSON(w, map[string]any{"ok": true, "enabled": req.Enabled, "minutes": req.Minutes})
+}
+
 func (s *Server) mediaServerConfig() (string, string) {
 	if s.deps.MediaServer == nil {
 		return "", ""

@@ -188,8 +188,13 @@ function renderTable(id, channels, full) {
     if (state.status.scan_progress?.[channel.id]?.error) chip.title = state.status.scan_progress[channel.id].error;
     statusCell.append(chip); const actionCell = element('td', 'row-action');
     if (full) {
+      const scan = element('button', 'icon-button scan-button'); scan.type = 'button'; scan.innerHTML = icon('refresh'); scan.setAttribute('aria-label', `扫描频道 ${title}`); scan.title = `扫描 ${title}`; scan.disabled = locked();
+      scan.addEventListener('click', async () => {
+        try { await mutate(`scan-${channel.id}`, `/api/channels/${encodeURIComponent(channel.id)}/scan`, {}); notify(`已开始扫描 ${title}`); }
+        catch (error) { notify(error.message, 'error'); }
+      });
       const button = element('button', 'icon-button'); button.type = 'button'; button.innerHTML = icon('trash'); button.setAttribute('aria-label', `删除频道 ${title}`); button.title = `删除 ${title}`; button.disabled = locked();
-      button.addEventListener('click', () => openDelete(channel)); actionCell.append(button);
+      button.addEventListener('click', () => openDelete(channel)); actionCell.append(scan, button);
     }
     row.append(identityCell, count, statusCell, actionCell); body.append(row);
   });
@@ -271,6 +276,10 @@ function renderConnections() {
   text('settings-notify-time', stamp(s.media_server_updated_at));
   const urlInput = $('media-server-url');
   if (document.activeElement !== urlInput) urlInput.value = s.media_server_url || '';
+  const autoEnabled = $('auto-scan-enabled');
+  if (document.activeElement !== autoEnabled) autoEnabled.checked = !!s.auto_scan_enabled;
+  const autoMinutes = $('auto-scan-minutes');
+  if (document.activeElement !== autoMinutes) autoMinutes.value = s.auto_scan_minutes || '';
 }
 function controls() {
   const busy = locked(), s = state.status;
@@ -282,8 +291,8 @@ function controls() {
   $('send-code').disabled = busy || !s?.has_credentials;
   $('login-submit').disabled = busy || !state.codeSent;
   ['save-credentials', 'relogin', 'confirm-delete'].forEach(id => { $(id).disabled = busy; });
-  ['phone', 'code', 'password', 'app-id', 'app-hash', 'media-server-url', 'media-server-key'].forEach(id => { $(id).disabled = busy; });
-  $('media-server-save').disabled = busy;
+  ['phone', 'code', 'password', 'app-id', 'app-hash', 'media-server-url', 'media-server-key', 'auto-scan-enabled', 'auto-scan-minutes'].forEach(id => { $(id).disabled = busy; });
+  $('media-server-save').disabled = busy; $('auto-scan-save').disabled = busy;
   ['cancel-delete', 'cancel-delete-icon'].forEach(id => { $(id).disabled = state.pending === 'delete'; });
   $('refresh').disabled = !!state.refresh;
 }
@@ -346,8 +355,18 @@ $('close-add').addEventListener('click', () => { $('add-panel').hidden = true; $
 $('add-form').addEventListener('submit', async event => {
   event.preventDefault(); const ref = $('channel-ref').value.trim(); if (!ref) return;
   message('add-message', '正在解析频道…');
-  try { const result = await mutate('add', '/api/channels', { ref }); $('channel-ref').value = ''; message('add-message', `已添加 ${result.title || ref}，回到同步概览即可扫描。`, 'success'); }
+  try { const result = await mutate('add', '/api/channels', { ref }); $('channel-ref').value = ''; message('add-message', result.warning || `已添加 ${result.title || ref}，媒体库已同步，回到同步概览即可扫描。`, result.warning ? 'error' : 'success'); }
   catch (error) { message('add-message', error.message, 'error'); }
+});
+$('auto-scan-form').addEventListener('submit', async event => {
+  event.preventDefault();
+  const enabled = $('auto-scan-enabled').checked;
+  const minutes = Number($('auto-scan-minutes').value) || 0;
+  if (enabled && (minutes < 1 || minutes > 1440)) { message('auto-scan-message', '间隔必须在 1～1440 分钟之间。', 'error'); return; }
+  try {
+    await mutate('auto-scan', '/api/auto-scan', { enabled, minutes });
+    message('auto-scan-message', enabled ? `已启用，每 ${minutes} 分钟自动扫描。` : '已关闭自动扫描。', 'success');
+  } catch (error) { message('auto-scan-message', error.message, 'error'); }
 });
 $('media-server-form').addEventListener('submit', async event => {
   event.preventDefault();
