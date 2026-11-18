@@ -150,6 +150,14 @@ func main() {
 		Logs:            logs,
 		StrmBase:        base,
 		MediaDir:        *mediaDir,
+		PosterDir:       filepath.Join(*dataDir, "posters"),
+		FetchThumbnail: func(ctx context.Context, channelID int64, messageID int) ([]byte, error) {
+			client := app.currentTG()
+			if client == nil {
+				return nil, errors.New("Telegram 客户端不可用")
+			}
+			return client.DownloadThumbnail(ctx, channelID, messageID)
+		},
 		SendCode:        app.sendCode,
 		SignIn:          app.signIn,
 		SubmitPassword:  app.submitPassword,

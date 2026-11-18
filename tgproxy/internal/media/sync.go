@@ -98,6 +98,9 @@ func planTree(groups []Group, base string) (map[string]string, int, error) {
 			prefix = SanitizeDirName(g.ChannelDir)
 		}
 		files[filepath.Join(prefix, dir, "tvshow.nfo")] = fmt.Sprintf("<tvshow><title>%s</title></tvshow>", xmlEscape(title))
+		if len(g.Poster) > 0 {
+			files[filepath.Join(prefix, dir, "poster.jpg")] = string(g.Poster)
+		}
 		counts := map[int]int{}
 		for _, ef := range g.Episodes {
 			counts[ef.Episode]++

@@ -184,8 +184,11 @@ label { display: block; font-size: 12px; font-weight: 550; margin-bottom: 7px; }
 .input-action input { flex: 1; min-width: 0; }
 .input-action button { flex: 0 0 auto; }
 .joined-channels { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin-top: 10px; }
-.joined-channels #joined-box { display: flex; gap: 8px; align-items: center; flex: 1; min-width: 240px; }
-.joined-channels select { flex: 1; min-width: 0; }
+.joined-channels #joined-box { display: grid; gap: 8px; flex: 1 1 100%; min-width: 240px; }
+.joined-list { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 260px), 1fr)); gap: 4px 16px; max-height: 280px; overflow: auto; padding: 8px 0; }
+.joined-option { display: flex; gap: 10px; align-items: center; min-height: 40px; padding: 6px 8px; border-bottom: 1px solid var(--line); cursor: pointer; }
+.joined-option input { width: 18px; height: 18px; accent-color: var(--accent); flex: 0 0 auto; }
+.joined-option span { overflow-wrap: anywhere; }
 .help { color: var(--muted); font-size: 12px; line-height: 1.8; margin-top: 9px; }
 .form-message { background: var(--accent-soft); color: var(--accent); padding: 10px 12px; border-radius: 7px; font-size: 12px; margin-top: 12px; overflow-wrap: anywhere; }
 .form-message[data-state="error"] { background: var(--red-soft); color: var(--red); }

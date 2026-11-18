@@ -1,15 +1,21 @@
 package web
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
+	"image"
+	"image/color"
+	"image/jpeg"
+	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"tgproxy/internal/logbus"
+	"tgproxy/internal/media"
 	"tgproxy/internal/store"
 	"tgproxy/internal/telegram"
 	"time"
@@ -35,6 +41,121 @@ func TestRemoveChannelMediaDirConstrainedToMediaRoot(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(outside, "keep")); err != nil {
 		t.Fatalf("outside data was affected: %v", err)
+	}
+}
+
+func TestBulkAddChannelsReturnsPerChannelResults(t *testing.T) {
+	dir := t.TempDir()
+	lib, err := store.Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resolved := map[string]int64{"@one": 1, "1": 1, "@two": 2}
+	s := NewServer(Deps{
+		Store:     lib,
+		Context:   context.Background(),
+		Connected: func() bool { return true },
+		MediaDir:  filepath.Join(dir, "media"),
+		StrmBase:  "http://host",
+		ResolveChannel: func(_ context.Context, ref string) (int64, string, error) {
+			if ref == "@bad" {
+				return 0, "", errors.New("not found")
+			}
+			id, ok := resolved[ref]
+			if !ok {
+				return 0, "", errors.New("not found")
+			}
+			return id, map[int64]string{1: "one", 2: "two"}[id], nil
+		},
+	})
+	w := httptest.NewRecorder()
+	body := strings.NewReader(`{"refs":["@one","@one","1","@bad","@two"]}`)
+	s.Handler().ServeHTTP(w, httptest.NewRequest("POST", "/api/channels", body))
+	if w.Code != 200 {
+		t.Fatalf("status=%d body=%s", w.Code, w.Body.String())
+	}
+	var result struct {
+		Added   int `json:"added"`
+		Results []struct {
+			Ref   string `json:"ref"`
+			Error string `json:"error"`
+		} `json:"results"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &result); err != nil {
+		t.Fatal(err)
+	}
+	if result.Added != 2 || len(result.Results) != 4 || len(lib.ListChannels()) != 2 {
+		t.Fatalf("result=%+v channels=%+v", result, lib.ListChannels())
+	}
+	if result.Results[1].Error == "" || result.Results[2].Error == "" {
+		t.Fatalf("duplicate/failed refs were not reported: %+v", result.Results)
+	}
+}
+
+func TestValidJPEG(t *testing.T) {
+	var out bytes.Buffer
+	img := image.NewRGBA(image.Rect(0, 0, 4, 4))
+	img.Set(0, 0, color.White)
+	if err := jpeg.Encode(&out, img, nil); err != nil {
+		t.Fatal(err)
+	}
+	if !validJPEG(out.Bytes()) || validJPEG([]byte("not an image")) || validJPEG(make([]byte, 2<<20+1)) {
+		t.Fatal("JPEG validation accepted invalid data or rejected a valid image")
+	}
+}
+
+func TestPosterFallbackCachesOnlySeriesWithoutPoster(t *testing.T) {
+	var requests, downloads int
+	emby := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/Library/VirtualFolders" {
+			_, _ = w.Write([]byte(`[{"Name":"Anime","ItemId":"42","Locations":["/media/channel"]}]`))
+			return
+		}
+		if r.URL.Path == "/Items" {
+			requests++
+			_, _ = w.Write([]byte(`{"Items":[{"Path":"/media/channel/Has Poster","ImageTags":{"Primary":"external"}}]}`))
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	defer emby.Close()
+	var poster bytes.Buffer
+	if err := jpeg.Encode(&poster, image.NewRGBA(image.Rect(0, 0, 4, 4)), nil); err != nil {
+		t.Fatal(err)
+	}
+	posterDir := t.TempDir()
+	s := NewServer(Deps{
+		MediaServer: func() (string, string) { return emby.URL, "key" },
+		MediaDir:    "/media",
+		PosterDir:   posterDir,
+		FetchThumbnail: func(_ context.Context, _ int64, messageID int) ([]byte, error) {
+			downloads++
+			if messageID == 2 {
+				return nil, telegram.ErrNoThumbnail
+			}
+			return poster.Bytes(), nil
+		},
+	})
+	groups := []media.Group{
+		{ChannelDir: "channel", Title: "Has Poster", Episodes: []media.EpisodeFile{{StreamKey: "7_1"}}},
+		{ChannelDir: "channel", Title: "Missing Poster", Episodes: []media.EpisodeFile{{StreamKey: "7_2"}, {StreamKey: "7_3"}}},
+	}
+	channels := []store.Channel{{ID: 7, Dir: "channel"}}
+	if err := s.addPosterFallbacks(context.Background(), groups, channels); err != nil {
+		t.Fatal(err)
+	}
+	if len(groups[0].Poster) != 0 || !bytes.Equal(groups[1].Poster, poster.Bytes()) || downloads != 2 {
+		t.Fatalf("poster lengths=%d/%d downloads=%d", len(groups[0].Poster), len(groups[1].Poster), downloads)
+	}
+	groups[1].Poster = nil
+	if err := s.addPosterFallbacks(context.Background(), groups, channels); err != nil {
+		t.Fatal(err)
+	}
+	if downloads != 2 || len(groups[1].Poster) == 0 {
+		t.Fatalf("cached fallback retried downloads=%d poster=%d", downloads, len(groups[1].Poster))
+	}
+	if requests != 2 {
+		t.Fatalf("Emby item queries=%d", requests)
 	}
 }
 

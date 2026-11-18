@@ -45,3 +45,53 @@ func TestRemoveChannelAndPersistFailure(t *testing.T) {
 		t.Fatal("failed save changed memory")
 	}
 }
+
+func TestMergeItemsPreservesExistingAndTracksNewestID(t *testing.T) {
+	l, err := Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = l.UpsertChannel(Channel{ID: 7, Ref: "@anime"}); err != nil {
+		t.Fatal(err)
+	}
+	if err = l.SetItems(7, []Item{{ChannelID: 7, MessageID: 12, Name: "old.mp4"}}); err != nil {
+		t.Fatal(err)
+	}
+	if err = l.MergeItemsWithCursor(7, []Item{{ChannelID: 7, MessageID: 15, Name: "new.mp4"}}, 15); err != nil {
+		t.Fatal(err)
+	}
+	if l.ScanCursor(7) != 15 || len(l.AllItems()) != 2 {
+		t.Fatalf("cursor=%d items=%+v", l.ScanCursor(7), l.AllItems())
+	}
+	if err = l.MergeItemsWithCursor(7, []Item{{ChannelID: 7, MessageID: 12, Name: "updated.mp4"}}, 15); err != nil {
+		t.Fatal(err)
+	}
+	item, ok := l.FindItem(7, 12)
+	if !ok || item.Name != "updated.mp4" || len(l.AllItems()) != 2 {
+		t.Fatalf("merge did not replace duplicate: %+v", l.AllItems())
+	}
+}
+
+func TestScanCursorPersistsForChannelsWithoutVideos(t *testing.T) {
+	dir := t.TempDir()
+	l, err := Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = l.UpsertChannel(Channel{ID: 9, Ref: "@empty"}); err != nil {
+		t.Fatal(err)
+	}
+	if err = l.SetItemsWithCursor(9, nil, 300); err != nil {
+		t.Fatal(err)
+	}
+	if l.ScanCursor(9) != 300 {
+		t.Fatalf("cursor=%d", l.ScanCursor(9))
+	}
+	reloaded, err := Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reloaded.ScanCursor(9) != 300 {
+		t.Fatalf("persisted cursor=%d", reloaded.ScanCursor(9))
+	}
+}

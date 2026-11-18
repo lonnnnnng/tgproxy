@@ -27,8 +27,11 @@ var episodePatterns = []episodePattern{
 var chineseSeason = regexp.MustCompile(`第\s*([0-9一二三四五六七八九十]+)\s*季`)
 var noiseTags = regexp.MustCompile(`(?i)(?:^|[\s._\-\[\]【】#])(?:1080p|720p|2160p|4k|2k|hdr|dv|x264|x265|h\.?264|h\.?265|hevc|avc)(?:$|[\s._\-\[\]【】#])`)
 var languageTags = regexp.MustCompile(`国粤双语|国语|粤语|中字|双语|内封|外挂|简繁|无水印|高清|完整版|加长版|未删减`)
-var sourceTags = regexp.MustCompile(`(?i)@[a-z0-9_]+|[\[【](?:来源|[^\]】]*字幕组)[\]】]`)
+var sourceTags = regexp.MustCompile(`(?i)@[a-z0-9_]+|[\[【](?:来源|独家|[^\]】]*字幕组)[\]】]`)
 var trailingYear = regexp.MustCompile(`\(\d{4}\)\s*$`)
+var releasePrefix = regexp.MustCompile(`(?i)^SHANA[\s._-]*`)
+var leadingIndex = regexp.MustCompile(`^\s*\d{1,3}[\s._-]+`)
+var yearToken = regexp.MustCompile(`(?:^|[\s._-])(?:19|20)\d{2}(?:$|[\s._-])`)
 
 func episodeIn(name string) (Episode, int, int, bool) {
 	base := strings.TrimSuffix(name, filepath.Ext(name))
@@ -109,12 +112,15 @@ func CleanTitle(name string) string {
 	}
 	base = chineseSeason.ReplaceAllString(base, "")
 	base = sourceTags.ReplaceAllString(base, " ")
+	base = releasePrefix.ReplaceAllString(base, "")
+	base = leadingIndex.ReplaceAllString(base, "")
+	base = yearToken.ReplaceAllString(base, " ")
 	for i := 0; i < 2; i++ {
 		base = noiseTags.ReplaceAllString(base, " ")
 	}
 	base = languageTags.ReplaceAllString(base, " ")
 	base = trailingYear.ReplaceAllString(base, "")
-	base = strings.NewReplacer(".", " ", "_", " ", "#", " ", "【", " ", "】", " ", "[", " ", "]", " ").Replace(base)
+	base = strings.NewReplacer(".", " ", "_", " ", "#", " ", "【", " ", "】", " ", "[", " ", "]", " ", "《", " ", "》", " ").Replace(base)
 	return strings.Trim(strings.Join(strings.Fields(base), " "), " ._-()（）")
 }
 
@@ -123,6 +129,7 @@ type Group struct {
 	Title      string
 	Season     int
 	Episodes   []EpisodeFile
+	Poster     []byte
 }
 type EpisodeFile struct {
 	Episode         int

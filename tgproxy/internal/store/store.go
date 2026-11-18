@@ -31,12 +31,13 @@ type Item struct {
 
 // Library is the media index (channel list + all items).
 type Library struct {
-	mu       sync.RWMutex
-	path     string
-	Channels []Channel `json:"channels"`
-	Items    []Item    `json:"items"`
-	Revision uint64    `json:"revision"`
-	index    map[string]Item
+	mu          sync.RWMutex
+	path        string
+	Channels    []Channel     `json:"channels"`
+	Items       []Item        `json:"items"`
+	ScanCursors map[int64]int `json:"scan_cursors,omitempty"`
+	Revision    uint64        `json:"revision"`
+	index       map[string]Item
 }
 
 func Open(dataDir string) (*Library, error) {
@@ -53,17 +54,40 @@ func Open(dataDir string) (*Library, error) {
 	} else if !os.IsNotExist(err) {
 		return nil, err
 	}
+	if l.ScanCursors == nil {
+		l.ScanCursors = make(map[int64]int)
+	}
 	l.reindexLocked()
 	return l, nil
 }
 
 // long: commitLocked 只在持久化成功后切换内存，避免界面成功而重启后丢失修改。
-func (l *Library) commitLocked(channels []Channel, items []Item) error {
-	next := &Library{Channels: channels, Items: items, Revision: l.Revision + 1}
+func (l *Library) commitLocked(channels []Channel, items []Item, cursorUpdates ...map[int64]int) error {
+	cursors := make(map[int64]int, len(l.ScanCursors))
+	for id, cursor := range l.ScanCursors {
+		cursors[id] = cursor
+	}
+	active := make(map[int64]bool, len(channels))
+	for _, channel := range channels {
+		active[channel.ID] = true
+	}
+	for id := range cursors {
+		if !active[id] {
+			delete(cursors, id)
+		}
+	}
+	if len(cursorUpdates) > 0 {
+		for id, cursor := range cursorUpdates[0] {
+			if cursor > cursors[id] {
+				cursors[id] = cursor
+			}
+		}
+	}
+	next := &Library{Channels: channels, Items: items, ScanCursors: cursors, Revision: l.Revision + 1}
 	if err := persist.WriteJSON(l.path, next); err != nil {
 		return err
 	}
-	l.Channels, l.Items, l.Revision = channels, items, next.Revision
+	l.Channels, l.Items, l.ScanCursors, l.Revision = channels, items, cursors, next.Revision
 	l.reindexLocked()
 	return nil
 }
@@ -195,6 +219,90 @@ func (l *Library) SetItems(channelID int64, items []Item) error {
 		}
 	}
 	return l.commitLocked(l.Channels, out)
+}
+
+func (l *Library) ScanCursor(channelID int64) int {
+	l.mu.RLock()
+	defer l.mu.RUnlock()
+	if cursor, ok := l.ScanCursors[channelID]; ok {
+		return cursor
+	}
+	maxID := 0
+	for _, item := range l.Items {
+		if item.ChannelID == channelID && item.MessageID > maxID {
+			maxID = item.MessageID
+		}
+	}
+	return maxID
+}
+
+func (l *Library) SetItemsWithCursor(channelID int64, items []Item, cursor int) error {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	found := false
+	for _, channel := range l.Channels {
+		if channel.ID == channelID {
+			found = true
+			break
+		}
+	}
+	if !found {
+		return fmt.Errorf("频道已移除，取消写入扫描结果")
+	}
+	out := make([]Item, 0, len(l.Items)+len(items))
+	seen := map[int]bool{}
+	for _, item := range l.Items {
+		if item.ChannelID != channelID {
+			out = append(out, item)
+		}
+	}
+	for _, item := range items {
+		if item.ChannelID != channelID || item.MessageID <= 0 {
+			return fmt.Errorf("扫描结果包含无效频道或消息 ID")
+		}
+		if !seen[item.MessageID] {
+			out = append(out, item)
+			seen[item.MessageID] = true
+		}
+	}
+	return l.commitLocked(l.Channels, out, map[int64]int{channelID: cursor})
+}
+
+func (l *Library) MergeItemsWithCursor(channelID int64, items []Item, cursor int) error {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	found := false
+	for _, channel := range l.Channels {
+		if channel.ID == channelID {
+			found = true
+			break
+		}
+	}
+	if !found {
+		return fmt.Errorf("频道已移除，取消写入扫描结果")
+	}
+	byID := make(map[int]Item)
+	for _, item := range l.Items {
+		if item.ChannelID == channelID {
+			byID[item.MessageID] = item
+		}
+	}
+	for _, item := range items {
+		if item.ChannelID != channelID || item.MessageID <= 0 {
+			return fmt.Errorf("扫描结果包含无效频道或消息 ID")
+		}
+		byID[item.MessageID] = item
+	}
+	out := make([]Item, 0, len(l.Items)+len(items))
+	for _, item := range l.Items {
+		if item.ChannelID != channelID {
+			out = append(out, item)
+		}
+	}
+	for _, item := range byID {
+		out = append(out, item)
+	}
+	return l.commitLocked(l.Channels, out, map[int64]int{channelID: cursor})
 }
 
 func (l *Library) Snapshot() (uint64, []Item) {

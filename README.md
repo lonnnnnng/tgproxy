@@ -6,7 +6,7 @@ tgproxy 负责索引、媒体树和稳定的 Range 读取；视频浏览、元�
 
 ## 当前版本
 
-- 最新发行版：[v0.3.3](https://github.com/lonnnnnng/tgproxy/releases/tag/v0.3.3)
+- 最新发行版：[v0.4.0](https://github.com/lonnnnnng/tgproxy/releases/tag/v0.4.0)
 - 线上控制台：[http://192.168.1.2:8080/](http://192.168.1.2:8080/)
 - 线上 Emby：[http://192.168.1.2:8096/](http://192.168.1.2:8096/)
 - 当前部署方式：Linux/amd64 静态二进制 + `systemd --user`
@@ -22,6 +22,14 @@ tgproxy 负责索引、媒体树和稳定的 Range 读取；视频浏览、元�
 - Emby API Key 改由 `X-Emby-Token` 请求头传递，避免密钥出现在 URL 查询参数
 - 频道媒体目录删除限制在媒体根目录内，并拒绝符号链接
 - HTTP 监听失败时执行正常关停流程
+
+## v0.4.0 变更
+
+- 频道扫描使用持久化 Telegram 消息游标，增量合并新视频并保留已有索引
+- 扫描完成后仅刷新受影响的 Emby 频道媒体库，避免全库元数据任务阻塞
+- 对 Emby 缺少主图的剧集缓存 Telegram 视频缩略图为本地 poster.jpg，每次同步限量补充
+- 已加入频道选择改为复选框，支持一次添加多个频道并返回逐项结果
+- 修复 Emby 响应读取上下文过早取消导致媒体库解析失败的问题
 
 ## v0.3.1 变更
 

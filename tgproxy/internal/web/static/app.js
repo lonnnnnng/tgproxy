@@ -286,7 +286,8 @@ function controls() {
   $('scan').disabled = busy || !s?.authorized || !state.channels.length;
   $('rebuild').disabled = busy;
   text('scan-label', taskBusy() ? '同步进行中' : state.pending === 'scan' ? '正在启动…' : '扫描并更新');
-  ['add-submit', 'show-add', 'load-joined', 'add-joined', 'joined-select'].forEach(id => { $(id).disabled = busy || !s?.authorized; });
+  ['add-submit', 'show-add', 'load-joined', 'add-joined'].forEach(id => { $(id).disabled = busy || !s?.authorized; });
+  $('joined-list').querySelectorAll('input').forEach(input => { input.disabled = busy || !s?.authorized; });
   $('channel-ref').disabled = busy || !s?.authorized;
   $('send-code').disabled = busy || !s?.has_credentials;
   $('login-submit').disabled = busy || !state.codeSent;
@@ -360,12 +361,13 @@ async function loadJoinedChannels(force = false) {
     const list = await api('/api/telegram/channels');
     const existing = new Set(state.channels.map(c => String(c.id)));
     const items = (Array.isArray(list) ? list : []).filter(c => !existing.has(String(c.id)));
-    const select = $('joined-select');
-    select.replaceChildren();
+    const listBox = $('joined-list');
+    listBox.replaceChildren();
     items.forEach(ch => {
-      const option = element('option', '', `${ch.title}${ch.username ? ` @${ch.username}` : ''}`);
-      option.value = ch.ref;
-      select.append(option);
+      const label = element('label', 'joined-option');
+      const checkbox = element('input'); checkbox.type = 'checkbox'; checkbox.value = ch.ref;
+      const title = element('span', '', `${ch.title}${ch.username ? ` @${ch.username}` : ''}`);
+      label.append(checkbox, title); listBox.append(label);
     });
     state.joinedLoaded = true;
     $('joined-box').hidden = items.length === 0;
@@ -377,14 +379,30 @@ async function loadJoinedChannels(force = false) {
 }
 $('load-joined').addEventListener('click', () => loadJoinedChannels(true));
 $('add-joined').addEventListener('click', async () => {
-  const ref = $('joined-select').value;
-  if (!ref) { message('joined-message', '请先选择一个频道。', 'error'); return; }
+  const refs = [...$('joined-list').querySelectorAll('input:checked')].map(input => input.value);
+  if (!refs.length) { message('joined-message', '请至少选择一个频道。', 'error'); return; }
   message('joined-message', '正在添加频道…');
   try {
-    const result = await mutate('add-joined', '/api/channels', { ref });
-    message('joined-message', result.warning || `已添加 ${result.title || ref}，媒体库已同步。`, result.warning ? 'error' : 'success');
+    const result = await mutate('add-joined', '/api/channels', { refs });
+    const failed = (result.results || []).filter(item => item.error);
+    const detail = failed.map(item => `${item.ref}（${item.error}）`).join('；');
+    message('joined-message', `添加完成 ${result.added || 0}/${refs.length} 个${detail ? `；失败：${detail}` : '，媒体库已同步。'}`, failed.length ? 'error' : 'success');
     state.joinedLoaded = false;
-    await loadJoinedChannels(true);
+    try {
+      const list = await api('/api/telegram/channels');
+      const existing = new Set(state.channels.map(c => String(c.id)));
+      const items = (Array.isArray(list) ? list : []).filter(c => !existing.has(String(c.id)));
+      const listBox = $('joined-list');
+      listBox.replaceChildren();
+      items.forEach(ch => {
+        const label = element('label', 'joined-option');
+        const checkbox = element('input'); checkbox.type = 'checkbox'; checkbox.value = ch.ref;
+        const title = element('span', '', `${ch.title}${ch.username ? ` @${ch.username}` : ''}`);
+        label.append(checkbox, title); listBox.append(label);
+      });
+      state.joinedLoaded = true;
+      $('joined-box').hidden = items.length === 0;
+    } catch { state.joinedLoaded = false; }
   } catch (error) { message('joined-message', error.message, 'error'); }
 });
 $('add-form').addEventListener('submit', async event => {

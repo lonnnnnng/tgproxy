@@ -1,11 +1,14 @@
 package web
 
 import (
+	"bytes"
 	"context"
 	"embed"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"image"
+	_ "image/jpeg"
 	"net/http"
 	"net/url"
 	"os"
@@ -27,9 +30,13 @@ var staticFS embed.FS
 
 // Deps are the services the web UI needs.
 type Deps struct {
-	Context     context.Context
-	ScanChannel func(context.Context, int64, int) ([]telegram.MediaItem, error)
-	Connected   func() bool
+	Context        context.Context
+	ScanChannel    func(context.Context, int64, int) ([]telegram.MediaItem, error)
+	ResolveChannel func(context.Context, string) (int64, string, error)
+	// ScanChannelSince returns channel videos newer than afterID.
+	ScanChannelSince func(context.Context, int64, int, func(int)) ([]telegram.MediaItem, int, error)
+	FetchThumbnail   func(context.Context, int64, int) ([]byte, error)
+	Connected        func() bool
 	// MediaServer returns the current Emby base URL and API key.
 	MediaServer func() (string, string)
 	// SaveMediaServer persists the Emby base URL and API key.
@@ -41,11 +48,12 @@ type Deps struct {
 	// TestMediaServer is an optional test hook for refresh notifications.
 	TestMediaServer func(context.Context, string, string) error
 	// Logs is the shared in-memory log buffer for the console.
-	Logs     *logbus.Bus
-	Store    *store.Library
-	TGFn     func() *telegram.Client // current client (nil until credentials set)
-	StrmBase string                  // e.g. http://192.168.1.2:8080
-	MediaDir string
+	Logs      *logbus.Bus
+	Store     *store.Library
+	TGFn      func() *telegram.Client // current client (nil until credentials set)
+	StrmBase  string                  // e.g. http://192.168.1.2:8080
+	MediaDir  string
+	PosterDir string
 
 	// SendCode sends the login verification code for the phone.
 	SendCode func(ctx context.Context, phone string) error
@@ -390,48 +398,109 @@ func (s *Server) handleAddChannel(w http.ResponseWriter, r *http.Request) {
 	}
 	defer s.taskMu.Unlock()
 	var req struct {
-		Ref string `json:"ref"`
+		Ref  string   `json:"ref"`
+		Refs []string `json:"refs"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || strings.TrimSpace(req.Ref) == "" {
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		httpError(w, 400, "need {ref: \"@channelname\"}")
+		return
+	}
+	refs := req.Refs
+	if len(refs) == 0 && strings.TrimSpace(req.Ref) != "" {
+		refs = []string{req.Ref}
+	}
+	if len(refs) == 0 || len(refs) > 100 {
+		httpError(w, 400, "请提供 1～100 个频道引用")
+		return
+	}
+	deduped := make([]string, 0, len(refs))
+	seenRefs := make(map[string]bool, len(refs))
+	for _, ref := range refs {
+		ref = strings.TrimSpace(ref)
+		key := strings.ToLower(ref)
+		if key == "" || seenRefs[key] {
+			continue
+		}
+		seenRefs[key] = true
+		deduped = append(deduped, ref)
+	}
+	refs = deduped
+	if len(refs) == 0 {
+		httpError(w, 400, "请提供至少一个有效频道引用")
 		return
 	}
 	if !s.connected() {
 		httpError(w, 400, "telegram not connected; login first")
 		return
 	}
-	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(r.Context(), 2*time.Minute)
 	defer cancel()
-	id, title, err := s.tg().ResolveChannel(ctx, req.Ref)
-	if err != nil {
-		httpError(w, 400, "resolve failed: "+err.Error())
-		return
+	type addResult struct {
+		Ref   string `json:"ref"`
+		ID    int64  `json:"id,omitempty"`
+		Title string `json:"title,omitempty"`
+		Error string `json:"error,omitempty"`
 	}
-	dir := fmt.Sprintf("%s [%d]", media.SanitizeDirName(title), id)
-	if media.SanitizeDirName(title) == "" {
-		dir = fmt.Sprintf("频道 [%d]", id)
-	}
-	library := title
-	for _, c := range s.deps.Store.ListChannels() {
-		if c.Title == title && c.ID != id {
-			library = fmt.Sprintf("%s [%d]", title, id)
-			break
+	results := make([]addResult, 0, len(refs))
+	added := 0
+	seenIDs := make(map[int64]bool, len(refs))
+	for _, raw := range refs {
+		ref := strings.TrimSpace(raw)
+		item := addResult{Ref: ref}
+		if ref == "" {
+			item.Error = "频道引用不能为空"
+			results = append(results, item)
+			continue
 		}
+		var id int64
+		var title string
+		var err error
+		if s.deps.ResolveChannel != nil {
+			id, title, err = s.deps.ResolveChannel(ctx, ref)
+		} else if client := s.tg(); client != nil {
+			id, title, err = client.ResolveChannel(ctx, ref)
+		} else {
+			err = errors.New("Telegram 客户端不可用")
+		}
+		if err != nil {
+			item.Error = "解析失败: " + err.Error()
+			results = append(results, item)
+			continue
+		}
+		item.ID, item.Title = id, title
+		if seenIDs[id] {
+			item.Error = "重复频道，已跳过"
+			results = append(results, item)
+			continue
+		}
+		seenIDs[id] = true
+		dir := fmt.Sprintf("%s [%d]", media.SanitizeDirName(title), id)
+		if media.SanitizeDirName(title) == "" {
+			dir = fmt.Sprintf("频道 [%d]", id)
+		}
+		library := title
+		for _, c := range s.deps.Store.ListChannels() {
+			if c.Title == title && c.ID != id {
+				library = fmt.Sprintf("%s [%d]", title, id)
+				break
+			}
+		}
+		ch := store.Channel{ID: id, Ref: ref, Title: title, Dir: dir, LibraryName: library, Added: true}
+		if err := s.deps.Store.UpsertChannel(ch); err != nil {
+			item.Error = "保存失败: " + err.Error()
+			results = append(results, item)
+			continue
+		}
+		added++
+		ctx2, cancel2 := context.WithTimeout(ctx, 20*time.Second)
+		if err := s.ensureChannelLibrary(ctx2, ch); err != nil {
+			item.Error = "已添加，但 Emby 媒体库同步失败: " + err.Error()
+			s.logf("error", "创建媒体库失败：%v", err)
+		}
+		cancel2()
+		results = append(results, item)
 	}
-	ch := store.Channel{ID: id, Ref: strings.TrimSpace(req.Ref), Title: title, Dir: dir, LibraryName: library, Added: true}
-	if err := s.deps.Store.UpsertChannel(ch); err != nil {
-		httpError(w, 500, "保存频道失败: "+err.Error())
-		return
-	}
-	ctx2, cancel2 := context.WithTimeout(context.Background(), 20*time.Second)
-	err = s.ensureChannelLibrary(ctx2, ch)
-	cancel2()
-	result := map[string]any{"ok": true, "id": id, "title": title}
-	if err != nil {
-		s.logf("error", "创建媒体库失败：%v", err)
-		result["warning"] = "频道已添加，但创建媒体库失败：" + err.Error()
-	}
-	writeJSON(w, result)
+	writeJSON(w, map[string]any{"ok": true, "added": added, "results": results})
 }
 
 func (s *Server) ensureAllLibraries() {
@@ -636,14 +705,15 @@ func (s *Server) updateChannelProgress(id int64, status string, videosFound int,
 
 func (s *Server) scanChannels(channels []store.Channel) {
 	var failures []string
+	scanSince := s.deps.ScanChannelSince
 	scan := s.deps.ScanChannel
-	if scan == nil {
-		scan = func(ctx context.Context, ch int64, limit int) ([]telegram.MediaItem, error) {
+	if scanSince == nil && scan == nil {
+		scanSince = func(ctx context.Context, ch int64, afterID int, progress func(int)) ([]telegram.MediaItem, int, error) {
 			c := s.tg()
 			if c == nil {
-				return nil, errors.New("Telegram 客户端不可用")
+				return nil, afterID, errors.New("Telegram 客户端不可用")
 			}
-			return c.ScanChannelProgress(ctx, ch, limit, func(n int) {
+			return c.ScanChannelSince(ctx, ch, afterID, 0, func(n int) {
 				s.updateChannelProgress(ch, "scanning", n, "")
 				s.logf("info", "扫描进度：频道 %d 已发现 %d 个视频", ch, n)
 			})
@@ -655,9 +725,22 @@ func (s *Server) scanChannels(channels []store.Channel) {
 			break
 		}
 		s.updateChannelProgress(ch.ID, "scanning", 0, "")
-		s.logf("info", "正在扫描 %s 的视频历史…", ch.Title)
+		afterID := s.deps.Store.ScanCursor(ch.ID)
+		if scanSince == nil {
+			afterID = 0
+		}
+		s.logf("info", "正在扫描 %s 的新增视频（消息 ID > %d）…", ch.Title, afterID)
 		ctx, cancel := context.WithTimeout(s.deps.Context, 30*time.Minute)
-		items, err := scan(ctx, ch.ID, 0)
+		var items []telegram.MediaItem
+		cursor := afterID
+		var err error
+		if scanSince != nil {
+			items, cursor, err = scanSince(ctx, ch.ID, afterID, func(n int) {
+				s.updateChannelProgress(ch.ID, "scanning", n, "")
+			})
+		} else {
+			items, err = scan(ctx, ch.ID, 0)
+		}
 		cancel()
 		found := len(items)
 		if err != nil {
@@ -668,7 +751,11 @@ func (s *Server) scanChannels(channels []store.Channel) {
 			for i, it := range items {
 				conv[i] = store.Item{ChannelID: it.ChannelID, MessageID: it.MessageID, Name: it.Name, Size: it.Size, MIME: it.MIME, Date: it.Date}
 			}
-			err = s.deps.Store.SetItems(ch.ID, conv)
+			if afterID > 0 {
+				err = s.deps.Store.MergeItemsWithCursor(ch.ID, conv, cursor)
+			} else {
+				err = s.deps.Store.SetItemsWithCursor(ch.ID, conv, cursor)
+			}
 		}
 		if err != nil {
 			msg := fmt.Sprintf("扫描 %s 失败: %v（保留原索引）", ch.Title, err)
@@ -681,7 +768,7 @@ func (s *Server) scanChannels(channels []store.Channel) {
 		s.logf("success", "%s 扫描完成：%d 个视频", ch.Title, len(items))
 	}
 	if s.deps.Context.Err() == nil {
-		result, err := s.rebuild(s.deps.Context)
+		result, err := s.rebuild(s.deps.Context, channels...)
 		if err != nil {
 			failures = append(failures, "生成媒体树失败: "+err.Error())
 			s.logf("error", "重建失败：%v", err)
@@ -698,7 +785,7 @@ func (s *Server) scanChannels(channels []store.Channel) {
 	s.mu.Unlock()
 }
 
-func (s *Server) rebuild(ctx context.Context) (map[string]any, error) {
+func (s *Server) rebuild(ctx context.Context, refreshChannels ...store.Channel) (map[string]any, error) {
 	s.mu.Lock()
 	s.rebuilding = true
 	s.mu.Unlock()
@@ -712,6 +799,11 @@ func (s *Server) rebuild(ctx context.Context) (map[string]any, error) {
 		conv[i] = media.Item{ChannelID: it.ChannelID, MessageID: it.MessageID, Name: it.Name, Size: it.Size, ChannelDir: dirs[it.ChannelID]}
 	}
 	groups := media.Classify(conv)
+	if s.deps.PosterDir != "" && s.deps.FetchThumbnail != nil && s.mediaServerConfigured() {
+		if err := s.addPosterFallbacks(ctx, groups, refreshChannels); err != nil {
+			s.logf("warn", "补充本地海报时遇到问题：%v", err)
+		}
+	}
 	n, err := media.BuildTree(s.deps.MediaDir, groups, s.deps.StrmBase, rev)
 	if err != nil {
 		s.mu.Lock()
@@ -734,7 +826,7 @@ func (s *Server) rebuild(ctx context.Context) (map[string]any, error) {
 	s.mu.Unlock()
 	result := map[string]any{"ok": true, "groups": len(groups), "strm_files": n, "media_dir": s.deps.MediaDir, "media_server_message": "媒体树已生成；请在 Emby 中确认库扫描结果。"}
 	if s.mediaServerConfigured() {
-		err := s.notifyMediaServer(ctx)
+		err := s.notifyMediaServer(ctx, refreshChannels...)
 		s.mu.Lock()
 		s.mediaUpdated = time.Now().UTC().Format(time.RFC3339)
 		if err != nil {
@@ -752,6 +844,100 @@ func (s *Server) rebuild(ctx context.Context) (map[string]any, error) {
 		}
 	}
 	return result, nil
+}
+
+func (s *Server) addPosterFallbacks(ctx context.Context, groups []media.Group, refreshChannels []store.Channel) error {
+	channels := refreshChannels
+	if len(channels) == 0 {
+		channels = s.deps.Store.ListChannels()
+	}
+	const maxPostersPerSync = 32
+	added := 0
+	baseURL, apiKey := s.mediaServerConfig()
+	posterByPath := make(map[string][]byte)
+	processedPaths := make(map[string]bool)
+	for _, ch := range channels {
+		libraryPath := filepath.Join(s.deps.MediaDir, ch.Dir)
+		withPoster, err := mediaserver.SeriesWithPosters(ctx, baseURL, apiKey, libraryPath)
+		if err != nil {
+			return err
+		}
+		for i := range groups {
+			g := &groups[i]
+			if g.ChannelDir != ch.Dir || len(g.Episodes) == 0 {
+				continue
+			}
+			seriesPath := filepath.Clean(filepath.Join(libraryPath, media.SanitizeDirName(g.Title)))
+			if processedPaths[seriesPath] {
+				g.Poster = posterByPath[seriesPath]
+				continue
+			}
+			for _, episode := range g.Episodes {
+				cachePath := filepath.Join(s.deps.PosterDir, episode.StreamKey+".jpg")
+				data, readErr := os.ReadFile(cachePath)
+				if readErr == nil && validJPEG(data) {
+					g.Poster = data
+					posterByPath[seriesPath] = data
+					processedPaths[seriesPath] = true
+					break
+				}
+			}
+			if len(g.Poster) > 0 || withPoster[seriesPath] {
+				processedPaths[seriesPath] = true
+				continue
+			}
+			if err := os.MkdirAll(s.deps.PosterDir, 0700); err != nil {
+				return err
+			}
+			for _, episode := range g.Episodes {
+				parts := strings.Split(episode.StreamKey, "_")
+				if len(parts) != 2 || added >= maxPostersPerSync {
+					continue
+				}
+				channelID, err1 := strconv.ParseInt(parts[0], 10, 64)
+				messageID, err2 := strconv.Atoi(parts[1])
+				if err1 != nil || err2 != nil {
+					continue
+				}
+				markerPath := filepath.Join(s.deps.PosterDir, episode.StreamKey+".no-thumbnail")
+				if _, err := os.Stat(markerPath); err == nil {
+					continue
+				}
+				data, err := s.deps.FetchThumbnail(ctx, channelID, messageID)
+				if errors.Is(err, telegram.ErrNoThumbnail) {
+					if writeErr := os.WriteFile(markerPath, []byte("no Telegram thumbnail\n"), 0600); writeErr != nil {
+						return writeErr
+					}
+					continue
+				}
+				if err != nil || !validJPEG(data) {
+					continue
+				}
+				cachePath := filepath.Join(s.deps.PosterDir, episode.StreamKey+".jpg")
+				if err := os.WriteFile(cachePath, data, 0600); err != nil {
+					return err
+				}
+				g.Poster = data
+				posterByPath[seriesPath] = data
+				processedPaths[seriesPath] = true
+				added++
+				s.logf("success", "已为 %q 缓存 Telegram 缩略图海报", g.Title)
+				break
+			}
+			if added >= maxPostersPerSync {
+				return nil
+			}
+		}
+	}
+	return nil
+}
+
+func validJPEG(data []byte) bool {
+	if len(data) < 4 || len(data) > 2<<20 {
+		return false
+	}
+	_, format, err := image.DecodeConfig(bytes.NewReader(data))
+	return err == nil && format == "jpeg"
 }
 func (s *Server) autoScanLoop() {
 	ticker := time.NewTicker(30 * time.Second)
@@ -827,7 +1013,7 @@ func (s *Server) mediaServerConfigured() bool {
 	return url != "" && key != ""
 }
 
-func (s *Server) notifyMediaServer(ctx context.Context) error {
+func (s *Server) notifyMediaServer(ctx context.Context, refreshChannels ...store.Channel) error {
 	url, key := s.mediaServerConfig()
 	if url == "" || key == "" {
 		return errors.New("媒体服务器未配置")
@@ -836,6 +1022,15 @@ func (s *Server) notifyMediaServer(ctx context.Context) error {
 	var err error
 	if s.deps.TestMediaServer != nil {
 		err = s.deps.TestMediaServer(ctx, url, key)
+	} else if len(refreshChannels) > 0 {
+		for _, ch := range refreshChannels {
+			if ch.Dir == "" {
+				continue
+			}
+			if err = mediaserver.RefreshLibrary(ctx, url, key, filepath.Join(s.deps.MediaDir, ch.Dir)); err != nil {
+				break
+			}
+		}
 	} else {
 		err = mediaserver.Refresh(ctx, url, key)
 	}

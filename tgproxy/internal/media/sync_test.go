@@ -1,6 +1,7 @@
 package media
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -67,6 +68,31 @@ func TestTreeSyncBacksUpStaleFilesAndKeepsRoot(t *testing.T) {
 	}
 	if rev, ok := TreeRevision(root); !ok || rev != 2 {
 		t.Fatal("revision not saved")
+	}
+}
+
+func TestBuildTreeManagesLocalPosterFallback(t *testing.T) {
+	root := t.TempDir()
+	poster := []byte("jpeg-poster-data")
+	groups := []Group{{ChannelDir: "Anime [1]", Title: "Example", Season: 1, Poster: poster, Episodes: []EpisodeFile{{Episode: 1, StreamKey: "1_10", Name: "example.mp4", Size: 1}}}}
+	if _, err := BuildTree(root, groups, "http://host", 1); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(root, "Anime [1]", "Example", "poster.jpg")
+	got, err := os.ReadFile(path)
+	if err != nil || string(got) != string(poster) {
+		t.Fatalf("poster=%q err=%v", got, err)
+	}
+	manifestData, err := os.ReadFile(filepath.Join(root, manifestName))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var manifest treeManifest
+	if err := json.Unmarshal(manifestData, &manifest); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := manifest.Files[filepath.Join("Anime [1]", "Example", "poster.jpg")]; !ok {
+		t.Fatal("poster is not registered as project-managed")
 	}
 }
 

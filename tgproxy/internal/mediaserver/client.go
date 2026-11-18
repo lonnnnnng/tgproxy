@@ -4,8 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/url"
+	"path/filepath"
 	"strings"
 	"time"
 )
@@ -31,28 +33,160 @@ func Refresh(ctx context.Context, base, key string) error {
 	return nil
 }
 
+// RefreshLibrary refreshes only the Emby library containing path.
+func RefreshLibrary(ctx context.Context, base, key, path string) error {
+	libs, err := ListLibraries(ctx, base, key)
+	if err != nil {
+		return err
+	}
+	for _, lib := range libs {
+		for _, location := range lib.Locations {
+			if strings.TrimRight(location, "/") != strings.TrimRight(path, "/") {
+				continue
+			}
+			query := url.Values{
+				"Recursive":           {"true"},
+				"MetadataRefreshMode": {"Default"},
+				"ImageRefreshMode":    {"Default"},
+				"ReplaceAllMetadata":  {"false"},
+				"ReplaceAllImages":    {"false"},
+			}
+			resp, err := request(ctx, http.MethodPost, base, key, "/Items/"+url.PathEscape(lib.ItemID)+"/Refresh", query)
+			if err != nil {
+				return fmt.Errorf("Emby 连接失败")
+			}
+			resp.Body.Close()
+			if resp.StatusCode != http.StatusNoContent && resp.StatusCode != http.StatusOK {
+				return fmt.Errorf("Emby 媒体库 %q 刷新返回 HTTP %d", lib.Name, resp.StatusCode)
+			}
+			return nil
+		}
+	}
+	return fmt.Errorf("Emby 未找到路径为 %q 的媒体库", path)
+}
+
 // Library is one Emby virtual folder.
 type Library struct {
 	Name           string         `json:"Name"`
-	ItemID         string         `json:"ItemId"`
+	ItemID         string         `json:"-"`
 	Locations      []string       `json:"Locations"`
 	LibraryOptions map[string]any `json:"LibraryOptions"`
 }
 
+type ImageTags struct {
+	Primary string `json:"Primary"`
+}
+
+type LibraryItem struct {
+	Path      string    `json:"Path"`
+	ImageTags ImageTags `json:"ImageTags"`
+}
+
+type libraryItemsResponse struct {
+	Items []LibraryItem `json:"Items"`
+}
+
+// SeriesWithPosters returns Series paths that currently have a primary image.
+func SeriesWithPosters(ctx context.Context, base, key, libraryPath string) (map[string]bool, error) {
+	libs, err := ListLibraries(ctx, base, key)
+	if err != nil {
+		return nil, err
+	}
+	var itemID string
+	for _, lib := range libs {
+		for _, loc := range lib.Locations {
+			if strings.TrimRight(loc, "/") == strings.TrimRight(libraryPath, "/") {
+				itemID = lib.ItemID
+				break
+			}
+		}
+	}
+	if itemID == "" {
+		return nil, fmt.Errorf("Emby 未找到路径为 %q 的媒体库", libraryPath)
+	}
+	query := url.Values{
+		"ParentId":         {itemID},
+		"Recursive":        {"true"},
+		"IncludeItemTypes": {"Series"},
+		"Fields":           {"Path,ImageTags"},
+		"Limit":            {"10000"},
+	}
+	resp, err := request(ctx, http.MethodGet, base, key, "/Items", query)
+	if err != nil {
+		return nil, fmt.Errorf("Emby 连接失败")
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("Emby Series 查询返回 HTTP %d", resp.StatusCode)
+	}
+	var result libraryItemsResponse
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return nil, fmt.Errorf("Emby Series 列表解析失败: %w", err)
+	}
+	withPoster := make(map[string]bool)
+	for _, item := range result.Items {
+		if item.Path != "" && item.ImageTags.Primary != "" {
+			withPoster[filepath.Clean(item.Path)] = true
+		}
+	}
+	return withPoster, nil
+}
+
+func (l *Library) UnmarshalJSON(data []byte) error {
+	type libraryFields Library
+	var value struct {
+		*libraryFields
+		ItemID json.RawMessage `json:"ItemId"`
+	}
+	value.libraryFields = (*libraryFields)(l)
+	if err := json.Unmarshal(data, &value); err != nil {
+		return err
+	}
+	if len(value.ItemID) == 0 || string(value.ItemID) == "null" {
+		return nil
+	}
+	if value.ItemID[0] == '"' {
+		return json.Unmarshal(value.ItemID, &l.ItemID)
+	}
+	var number json.Number
+	if err := json.Unmarshal(value.ItemID, &number); err != nil {
+		return fmt.Errorf("invalid Emby library item id: %w", err)
+	}
+	l.ItemID = number.String()
+	return nil
+}
+
+type cancelBody struct {
+	io.ReadCloser
+	cancel context.CancelFunc
+}
+
+func (b *cancelBody) Close() error {
+	err := b.ReadCloser.Close()
+	b.cancel()
+	return err
+}
+
 func request(ctx context.Context, method, base, key, path string, query url.Values) (*http.Response, error) {
 	ctx, cancel := context.WithTimeout(ctx, 20*time.Second)
-	defer cancel()
 	u := strings.TrimRight(base, "/") + path
 	if query != nil {
 		u += "?" + query.Encode()
 	}
 	r, err := http.NewRequestWithContext(ctx, method, u, nil)
 	if err != nil {
+		cancel()
 		return nil, err
 	}
 	r.Header.Set("X-Emby-Token", key)
 	c := &http.Client{CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
-	return c.Do(r)
+	resp, err := c.Do(r)
+	if err != nil {
+		cancel()
+		return nil, err
+	}
+	resp.Body = &cancelBody{ReadCloser: resp.Body, cancel: cancel}
+	return resp, nil
 }
 
 // ListLibraries returns all Emby virtual folders, retrying transient failures.
@@ -84,7 +218,7 @@ func listLibrariesOnce(ctx context.Context, base, key string) ([]Library, error)
 	}
 	var libs []Library
 	if err := json.NewDecoder(resp.Body).Decode(&libs); err != nil {
-		return nil, fmt.Errorf("Emby 媒体库列表解析失败")
+		return nil, fmt.Errorf("Emby 媒体库列表解析失败: %w", err)
 	}
 	return libs, nil
 }
@@ -198,16 +332,22 @@ func defaultLibraryOptions() map[string]any {
 
 func requestBody(ctx context.Context, method, base, key, path string, body []byte) (*http.Response, error) {
 	ctx, cancel := context.WithTimeout(ctx, 20*time.Second)
-	defer cancel()
 	u := strings.TrimRight(base, "/") + path
 	r, err := http.NewRequestWithContext(ctx, method, u, strings.NewReader(string(body)))
 	if err != nil {
+		cancel()
 		return nil, err
 	}
 	r.Header.Set("Content-Type", "application/json")
 	r.Header.Set("X-Emby-Token", key)
 	c := &http.Client{CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
-	return c.Do(r)
+	resp, err := c.Do(r)
+	if err != nil {
+		cancel()
+		return nil, err
+	}
+	resp.Body = &cancelBody{ReadCloser: resp.Body, cancel: cancel}
+	return resp, nil
 }
 
 // DeleteLibraryByPath removes the library whose location matches path.
