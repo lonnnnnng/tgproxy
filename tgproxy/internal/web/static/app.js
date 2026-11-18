@@ -78,6 +78,7 @@ function route(focus = false) {
   document.querySelectorAll('[data-view]').forEach(link => {
     if (link.dataset.view === state.view) link.setAttribute('aria-current', 'page'); else link.removeAttribute('aria-current');
   });
+  document.querySelector(`[data-view="${state.view}"]`)?.scrollIntoView({ block: 'nearest', inline: 'nearest' });
   const [title, description] = views[state.view];
   text('page-title', title); text('breadcrumb-current', title); text('page-description', description);
   document.title = `${title} · tgproxy`;
@@ -159,7 +160,12 @@ function renderOverview() {
 function empty(target, title, description, action) {
   const node = element('div', 'empty'); const symbol = element('span'); symbol.innerHTML = icon('channels');
   node.append(symbol, element('strong', '', title), element('p', '', description));
-  if (action) { const link = element('a', 'text-link', action.label); link.href = action.href; node.append(link); }
+  if (action) {
+    const link = element(action.href ? 'a' : 'button', action.href ? 'text-link' : 'text-button', action.label);
+    if (action.href) link.href = action.href;
+    else { link.type = 'button'; link.addEventListener('click', action.action); }
+    node.append(link);
+  }
   target.replaceChildren(node);
 }
 function renderTable(id, channels, full) {
@@ -283,9 +289,11 @@ function renderConnections() {
 }
 function controls() {
   const busy = locked(), s = state.status;
+  document.body.classList.toggle('busy', !!state.pending || taskBusy());
   $('scan').disabled = busy || !s?.authorized || !state.channels.length;
   $('rebuild').disabled = busy;
-  text('scan-label', taskBusy() ? '同步进行中' : state.pending === 'scan' ? '正在启动…' : '扫描并更新');
+  text('scan-label', state.pending === 'scan' ? '正在启动…' : taskBusy() ? '同步进行中' : '扫描并更新');
+  text('rebuild-label', state.pending === 'rebuild' ? '正在重建…' : taskBusy() ? '同步进行中' : '重建媒体树');
   ['add-submit', 'show-add', 'load-joined', 'add-joined'].forEach(id => { $(id).disabled = busy || !s?.authorized; });
   $('joined-list').querySelectorAll('input').forEach(input => { input.disabled = busy || !s?.authorized; });
   $('channel-ref').disabled = busy || !s?.authorized;
@@ -294,6 +302,8 @@ function controls() {
   ['save-credentials', 'relogin', 'confirm-delete'].forEach(id => { $(id).disabled = busy; });
   ['phone', 'code', 'password', 'app-id', 'app-hash', 'media-server-url', 'media-server-key', 'auto-scan-enabled', 'auto-scan-minutes'].forEach(id => { $(id).disabled = busy; });
   $('media-server-save').disabled = busy; $('auto-scan-save').disabled = busy;
+  text('media-server-save-label', state.pending === 'media-server' ? '正在保存…' : '保存并测试');
+  text('auto-scan-save-label', state.pending === 'auto-scan' ? '正在保存…' : '保存自动扫描');
   ['cancel-delete', 'cancel-delete-icon'].forEach(id => { $(id).disabled = state.pending === 'delete'; });
   $('refresh').disabled = !!state.refresh;
 }
